@@ -1,0 +1,42 @@
+---
+description: Root-cause-first debugging discipline with change tracking to avoid symptomatic-fix loops
+alwaysApply: true
+---
+
+# Systematic Debugging (anti-loop)
+
+Applies when a fix doesn't stick, a change "fixes one thing and breaks another," or the
+same class of failure recurs. The goal is the **real, complete** root cause — not the next
+green run. These are guardrails, not a script: pick the lightest approach that fits.
+
+## Switch to systematic mode early
+After **2 failed fix attempts** on the same problem, stop reactive editing and reset:
+- State the failing behavior as a falsifiable claim + how you'll measure pass/fail.
+- Write down the hypotheses you have NOT yet ruled out.
+- Reproduce against real infra/evidence (this project verifies in AWS — see
+  `cloud-first-verification.mdc`), not assumptions.
+
+## Keep a change/attempt ledger
+For any multi-attempt fix, maintain a short written ledger (in the relevant
+`docs/.../*_LOG.md`, the PR/commit body, or a scratch doc) so you never repeat a dead end:
+
+```
+| attempt | hypothesis | change made | result (per variant) | conclusion |
+```
+
+Track outcomes **per variant** that can fail independently — browser, shard, env, OS,
+role, region. A pass on one variant is not "done"; re-check the others before moving on.
+
+## Find ALL root causes, not the first
+Rotating / whack-a-mole failures usually mean **stacked root causes** (the Phase 16.38 E2E
+flake was 3: CloudFront MIME masking + WAF rate-limit + a UI race). Symptoms shifting from
+A to B after a change is the signal to look for a second cause, not to celebrate.
+
+- ❌ Symptomatic: bump a timeout, add a retry, widen a selector so this run goes green.
+- ✅ Root cause: explain *why* it failed, *why your fix addresses that cause*, and *why it
+  won't regress the variants that previously passed* — then verify all of them.
+
+## Don't claim "fixed" without holistic verification
+Re-run the full set of independently-failing variants (all browsers/shards/etc.) and show
+the evidence. If one variant is inherently flaky, quarantine it explicitly with an owner +
+deadline rather than leaning on retries in the blocking lane.

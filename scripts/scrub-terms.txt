@@ -1,0 +1,23 @@
+# Generic leak patterns — one PCRE per line, case-insensitive. Comments start with '#'.
+# These catch the classes of identifier that should never appear in a published rule or skill,
+# regardless of which project it came from. The maintainer's project-specific list lives OUTSIDE
+# the repo (scripts/scrub-terms.private.txt is gitignored; see scrub-check.sh) — publishing the
+# words you are scrubbing would defeat the scrub.
+# Cloud identifiers
+\b\d{12}\b
+arn:aws:[a-z0-9-]+:[a-z0-9-]*:\d{12}
+AKIA[0-9A-Z]{12,}
+[a-z0-9]+\.cloudfront\.net
+[a-z0-9]+\.execute-api\.
+[a-z0-9-]+\.amazonaws\.com/[a-z]
+# Local machine paths and accounts
+/Users/[a-z]
+/home/[a-z]
+C:\\Users\\
+# Contact / credentials
+[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}
+sk-[A-Za-z0-9]{10,}
+ghp_[A-Za-z0-9]{10,}
+xox[bp]-
+# Cloud-synced folder leak — allowed only in the generic phrase "iCloud/Dropbox/OneDrive"
+icloud(?!/dropbox)

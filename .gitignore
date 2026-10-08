@@ -1,0 +1,4 @@
+.DS_Store
+*.swp
+# The maintainer's project-specific scrub list. Never commit: it names what the scrub removes.
+scripts/scrub-terms.private.txt

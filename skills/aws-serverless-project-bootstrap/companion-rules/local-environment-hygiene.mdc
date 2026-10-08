@@ -1,0 +1,78 @@
+---
+description: Local workspace, tool-version parity, and remote-sync hygiene to prevent corruption and stale-state bugs
+alwaysApply: true
+---
+
+# Local Environment Hygiene
+
+Hard-won from real time sinks. These prevent corruption, silent-stale-state bugs, and
+version skew between the laptop and cloud CI. Principles, not bans — adapt as tooling evolves.
+
+## One clone, on a normal local path — the remote's `develop` is the source of truth
+No local clone is authoritative; **the remote's `develop` is** (it's what the pipeline deploys;
+reference build: CodeCommit). Local clones are disposable working copies — keep exactly **one**,
+on a normal local disk path, never inside a cloud-synced/backup folder such as
+iCloud/Dropbox/OneDrive (sync corrupts `.git`, hangs ops with `index.lock`, and half-pushes
+objects).
+
+- **Canonical working clone:** `~/dev/<repo>` — fast, kept in sync with
+  `develop`. Do all git work, edits, commits, and pushes here (and the Cursor workspace is rooted
+  here, so the always-applied rules Cursor loads are the current ones).
+- **Don't create additional clones.** Extra clones silently diverge and get clobbered. Before git
+  work run `git rev-parse --show-toplevel`; if it isn't the canonical clone, switch to it. If a
+  clone ever seems necessary, reconcile against the remote's `develop` and remove the old one instead
+  of accumulating.
+
+## `git fetch` updates FETCH_HEAD, not `origin/<branch>` — verify the REAL remote tip
+The cached remote-tracking ref (`origin/develop`) can lag the actual remote, so a branch cut
+"from `develop`" or a fast-forward check can be silently wrong (real: branched off a stale
+`origin/develop`, the PR wasn't fast-forwardable, needed a rebase). Before branching from or
+FF-merging into a shared branch, read the **live** tip — `git ls-remote origin <branch>` (or, in
+the reference build, `aws codecommit get-branch --branch-name <branch>`) — or fetch into the
+tracking ref explicitly (`git fetch origin develop:refs/remotes/origin/develop`). Note
+`--force-with-lease` can misfire with some remote helpers (example: `git-remote-codecommit`
+reported "stale info"); refresh the tracking ref first, or use a
+plain `--force` **only on your own feature branch**.
+
+## Never commit an empty/0-byte source or test module that something imports
+A committed empty file pushes fine but fails **CI typecheck/build** later (real:
+`<api-package>/test/factories/cognito.ts` was 0 bytes in history → the barrel that re-exported
+it broke `tsc`). An import that resolves to an empty module is a latent CI failure. Read
+`git diff`/`git status` before committing; if a tracked source/factory/module file is empty when
+it shouldn't be, restore or rewrite it — don't commit the empty shell.
+
+## Read `git diff` before you commit
+**Always `git status` + read `git diff` before staging.** If the diff *removes* things you know
+were committed and verified, treat it as an accident and `git restore` to `HEAD` rather than
+committing. Never `git commit -a` blind.
+
+## Local ≠ remote — verify the push actually landed
+A correct-looking local tree means nothing if the push didn't fully reach the remote (a
+partial/failed push once left **stale visual baselines** on the remote while local looked
+right → "passes locally, fails in CI"). After pushing, confirm the remote has the bytes —
+especially **binaries** (baseline images, archives): check the remote ref/blob, not just
+`git push` exit code. Treat CI's view of the repo as the source of truth.
+
+## Match local tool/runtime versions to CI and to state
+Version skew between laptop and pipeline causes real breakage:
+- **Terraform:** a local apply with a newer binary upgrades the state file and locks out
+  the pipeline's pinned version. For any local op that *writes* state (bootstrap/import),
+  use the **same Terraform version as the pipeline/state** (pin/download it).
+- **git:** match the git version your tooling expects. (Example from the reference build: the
+  `git` on `PATH` was 2.22 and rejected an injected trailer, so commits used `/usr/bin/git`
+  2.50+; CodeCommit pushes also needed `git-remote-codecommit` on `PATH` +
+  `AWS_PROFILE=<account-id>` — see `git-workflow.mdc`.)
+- **node/npm:** match the Node version CI uses. If the local toolchain is broken, don't fight
+  it — when a rare local repro is genuinely needed (e.g. regenerating a Playwright visual
+  baseline), run it inside the **exact CI Docker image**
+  (`mcr.microsoft.com/playwright:v<pinned>-noble`) with the repo bind-mounted, so the toolchain
+  matches CI byte-for-byte. (Example from the reference build: the local Node failed with a
+  missing ICU dylib, `libicui18n.*.dylib`, `npm ci` exit 134.) This is a repro aid only — the
+  pass/fail gate is still the cloud pipeline.
+
+## Local is for editing + bootstrap only, not the verification gate
+Per `cloud-first-verification.mdc`, the only sanctioned pass/fail gate is the cloud pipeline
+(reference build: AWS CodeBuild).
+The rare exception is a **one-time CD bootstrap** that the pipeline cannot do for itself
+(e.g. creating the pipeline's own apply stage) — do it targeted, version-matched, and
+documented, then route all subsequent work through the pipeline.

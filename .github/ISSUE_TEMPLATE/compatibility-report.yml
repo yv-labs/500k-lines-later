@@ -1,0 +1,36 @@
+name: "Compatibility report"
+description: "It works (or doesn't) on a tool/version. One line is enough; this is how docs/compatibility.md gets real."
+title: "[compat] <tool> <version>: "
+labels: ["compatibility"]
+body:
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Tool
+      options: [Cursor, Claude Code, Codex, GitHub Copilot, Gemini CLI, Windsurf / Devin Desktop, Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options: ["Works as documented", "Works with a tweak (describe)", "Does not load", "Loads but behaves differently"]
+    validations:
+      required: true
+  - type: dropdown
+    id: what
+    attributes:
+      label: What did you install?
+      multiple: true
+      options: ["Rules (all)", "Rules (a pack)", "One or more skills", "User-level skill", "AGENTS.md only", "Adapter (Copilot/Gemini/Windsurf)"]
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything the docs got wrong, or what you had to change.

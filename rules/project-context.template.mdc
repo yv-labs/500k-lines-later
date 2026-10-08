@@ -1,0 +1,76 @@
+---
+description: Core project context, architecture overview, and immutable business constraints (fill in for your project)
+alwaysApply: true
+---
+
+<!-- TEMPLATE: copy to .cursor/rules/project-context.mdc and fill in. This is the one always-on rule that is unique to YOUR project. -->
+
+# <Project> — Project Context
+
+## How to read these rules: guardrails, not cages
+The rules and skills in this repo are **verification reflexes, environment facts, and catalogued
+failure modes** — they exist so hard-won lessons (see `docs/RETROSPECTIVE_AND_PLAYBOOK.md`) don't
+recur. They are **not** a mandated way to design solutions and must not narrow how you think.
+- **Design freely.** Prefer the best/most novel solution to the problem in front of you. No rule
+  here dictates architecture, algorithm, or approach — invent as needed.
+- **What the rules DO ask:** verify against known traps before claiming done (cloud-verify,
+  read `git diff` before commit, grep the IaC to confirm a documented behavior is wired, know a
+  pipeline's real stages), respect the immutable business constraints below and
+  security/compliance, and don't repeat a catalogued mistake.
+- **If a rule blocks a clearly better solution,** it's a guardrail bug: do the better thing,
+  then update the rule (per `continuous-improvement.mdc`) so the guidance improves instead of
+  caging the next run. Distinguish **hard constraints** (business constraints, security, cloud-only
+  verification, single-track branch model) from **soft defaults** (conventions you may override
+  with a stated reason).
+
+## What This Project Is
+> One short paragraph: what the product does, its user-facing surfaces, the stack, and whether it is greenfield or brownfield.
+- <one-line product description>
+- Surfaces: <surface-1>, <surface-2>, <surface-3>
+- Stack: <frontend>, <backend/runtime>, <datastores>, <auth>
+- <greenfield | brownfield — what already exists>
+
+## Repository Structure
+> Name the remote of record and where to push (and where NOT to), then list each top-level package directory with a one-line purpose.
+- Remote of record: <git host / repo> (`<region>`, `<account-id>` if relevant) — see `git-workflow.mdc`
+- `<web-package>/` — <web app stack>
+- `<api-package>/` — <backend functions/services>
+- `<terraform-modules>/` — <reusable IaC modules>
+- `<infra>/` — <per-environment IaC configs>
+- `docs/` — <PRD, TRD, Architecture, Implementation Plan, Retrospective & Playbook>
+
+## Source of Truth for Status
+> Tell the agent which document is authoritative for "what's done" and which ones are known to be stale, so it reconciles before planning.
+- Authoritative status: <e.g. per-task Implementation Log sections in `docs/IMPLEMENTATION_PLAN.md`>
+- Known-stale: <e.g. a summary tracker table — do not trust it>
+- Canonical inventories: <e.g. service/function list in `docs/TRD.md §<n>` — don't assume a hard count>
+- Lessons learned: <e.g. `docs/RETROSPECTIVE_AND_PLAYBOOK.md` — read before large/cross-cutting work>
+
+## Critical Business Rules (enforce in ALL code)
+> The immutable constraints every change must respect. State each as a testable rule plus the enforcement point (API response filtering, auth, UI copy, etc.). Keep this list short — only true invariants.
+1. **<Rule name>** — <constraint>. <where/how it is enforced>.
+2. **<Rule name>** — <constraint>. <where/how it is enforced>.
+3. **<Rule name>** — <constraint>. <where/how it is enforced>.
+
+## Permission Matrix
+> List the roles and point to the full authorization matrix. The agent must check the caller's role before returning data.
+- Roles: <role-1>, <role-2>, <role-3>, …
+- Full matrix: <e.g. `docs/TRD.md §<n>`>
+
+## Rollout Scope
+> Anything that scopes features or data by launch phase (regions, markets, tenants, feature flags). Delete this section if not applicable.
+- Phase 1: <scope>
+- Phase 2: <scope>
+
+## Implementation Plan
+> Where the work breakdown lives and what to update after each task.
+- All work follows <plan document>. After implementing a task, update <its log section> with files changed, key decisions, and the date.
+
+---
+
+## Example (generic multi-tenant SaaS)
+An invented orders/customers/suppliers app, to show the shape of the business-rules section:
+
+1. **Tenant isolation** — No query touches a tenant-owned table without a `tenant_id` predicate derived from the caller's token, never from the request body. Enforced in the shared DB layer; a handler cannot opt out.
+2. **No card data** — The platform records `invoice_records` for internal tracking (admin-only) but never accepts or stores card/bank numbers; payments are delegated to the external processor's hosted page.
+3. **Soft-delete only** — Rows are never physically deleted from audited tables; `deleted_at` + retention job. Every list endpoint filters `deleted_at IS NULL` via the shared query builder.

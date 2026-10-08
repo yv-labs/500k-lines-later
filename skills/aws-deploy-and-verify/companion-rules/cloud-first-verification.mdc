@@ -1,0 +1,96 @@
+---
+description: "Cloud-first verification — ALL verification (lint, typecheck, tests, build, deploy) runs in the CI pipeline (reference build: AWS CodeBuild), never on the local machine"
+alwaysApply: true
+---
+
+# Cloud-First Verification
+
+This project runs **entirely on AWS** with a real dev account (`<account-id>`,
+`<region>`). The local machine is for **editing code only**. It is **never** a
+verification gate. Local emulation does not match production topology and has
+historically burned hours/tokens for near-zero value (see your project's retrospective).
+AWS/CodeBuild is the worked example below; the principle is portable.
+
+> **The ONLY sanctioned verification path is AWS CodeBuild.**
+> Substitute your CI (GitHub Actions, GitLab CI, CodeBuild) — the principle is that pass/fail
+> comes from the pipeline, never the laptop.
+> Every lint, type-check, unit test, build, `terraform validate/plan/apply`, and
+> deploy happens inside a CodeBuild project — triggered automatically by pushing
+> a branch or opening a Pull Request, or by the deploy pipeline on `main`.
+
+## Hard rule — do NOT run these locally to validate anything
+This is exhaustive and non-negotiable. Do not run, and do not cite the output of:
+- **Unit/integration tests locally** (`vitest`, `npm test`, `jest`, etc.). They run
+  in CI. If you want a test result, push the branch and read the CodeBuild log.
+- **Lint locally as a gate** (`eslint`). It runs in CI.
+- **Type-checks locally** (`tsc`, `tsc -b`, `tsc --noEmit`, single-file or full). They
+  run in CI. (The full-repo `tsc` also hangs for tens of minutes on this repo.)
+- **`terraform plan` / `apply` locally** as the source of truth. They run in CI.
+- Local Vite dev server, `vite preview`, HMR, or a local production build as proof.
+- iOS/Android emulators/simulators to "test the app". Mobile validation happens on
+  the deployed build; only touch native tooling when the task is explicitly native.
+- Local headless-Chrome screenshot runs (locked user-data-dir / Qt failures).
+
+The ONLY thing you may run locally is `terraform fmt` (pure formatting, no AWS calls,
+no validation semantics) and read-only `git`/`aws` inspection commands. Everything
+that produces a pass/fail signal belongs in CodeBuild.
+
+**Narrow exception — one-time CD bootstrap.** A pipeline cannot create its own apply
+stage, and a brand-new state backend has no pipeline yet. Such bootstrap-only writes may
+run locally **once**, but must be: (a) **version-matched** to the pipeline/state (pin the
+exact Terraform binary — a newer one upgrades state and locks out CI), (b) **targeted**
+(`-target=...`) to only the bootstrap resources, and (c) **documented** in the impl log.
+All subsequent applies route through the pipeline. See `local-environment-hygiene.mdc` and
+`cicd-first.mdc`. This is not a loophole for skipping CI verification of feature work.
+
+## How to verify in AWS (the workflow)
+1. Work on the **one** active `feature/<task-id>-<desc>` branch, cut from **`develop`**
+   (see `git-workflow.mdc` — single feature branch at a time). Never commit straight to
+   `develop` or `main`.
+2. Push the branch to the remote your pipeline watches (reference build: **CodeCommit**,
+   `AWS_PROFILE=<account-id> git push <remote> <branch>`). The push triggers the CI job
+   (reference build: **`<prefix>-ci-<env>` CodeBuild**) automatically (install → lint →
+   typecheck → unit tests → build → `terraform fmt -check`/`validate`). **No deploy.**
+3. Open a **Pull Request** into **`develop`** (reference build: `aws codecommit create-pull-request ...`).
+   The PR re-runs CI; the result is posted back as a PR comment + approval state.
+4. **Merge is gated on CI passing** (reference build: CodeCommit approval rule template; use branch
+   protection on GitHub/GitLab). Merging the PR into **`develop`** triggers the **dev deploy
+   pipelines** (reference build: `<prefix>-web/api/infra-pipeline-dev`).
+   Promotion to prod is a separate `develop → main` merge behind a manual approval gate.
+5. Read the CodeBuild log / pipeline state for the verdict — that is the artifact.
+
+Never fast-forward or push directly to `develop`/`main` "just to run the tests". CI runs on the
+feature branch and the PR; `develop` deploys to dev and `main` deploys to prod.
+
+## Security stance (non-negotiable — this is how large orgs do it)
+- **All AWS auth in CI/CD is via IAM service roles** assumed by CodeBuild/CodePipeline,
+  resolved through the **default credential chain**. Least privilege, scoped per project.
+- **Never** the AWS **root account**. **Never** long-lived IAM access keys. **Never** a
+  hardcoded `profile = "..."` or `~/.aws/config` baked into Terraform/buildspecs (CI
+  passes `-var "aws_profile="` so the provider falls back to the role).
+- CI (verify) roles hold **no deploy permissions**. Deploy permissions live only on the
+  CD pipeline/build roles. Keep that separation.
+- Build-time config comes from **SSM Parameter Store / Secrets Manager**, read by the
+  role — never committed `.env` files.
+
+## Definition of Done (every task)
+A task is **not** done until all of the following are true:
+1. The change is on a feature branch and **`<prefix>-ci-<env>` is GREEN** for that branch/PR
+   (lint + typecheck + tests + build all pass in CodeBuild).
+2. The change is **merged to `develop` via PR** and **deployed to AWS dev** by the pipeline
+   (web → S3/CloudFront, API → Lambda, infra → `terraform apply`). Prod is a later
+   approval-gated `develop → main` promotion.
+3. The change is **verified with a shown artifact**: a browser screenshot of the dev
+   CloudFront URL, a CloudWatch log line / request-id, a CodeBuild log excerpt, or a
+   successful live API response.
+4. `terraform plan` is clean (no unexpected drift) for any infra change — read from the
+   CI/pipeline plan output, not a local run.
+5. The Implementation Log in `docs/IMPLEMENTATION_PLAN.md` is updated.
+
+## Behavior rules
+- Never claim a phase/task is "done" without the CI-green + deployed + artifact above
+  (F-G1, F-C1).
+- For any **UI change**, show the result and get sign-off **before** the S3 sync /
+  CloudFront invalidation (F-G3).
+- Never end a turn with **orphaned background processes** running.
+- Prefer deterministic, non-backgrounded inspection commands.

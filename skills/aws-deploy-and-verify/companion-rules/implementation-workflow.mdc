@@ -1,0 +1,52 @@
+---
+description: Mandatory workflow for implementing any task — search, verify, then build
+alwaysApply: true
+---
+
+# Implementation Workflow
+
+## Before Writing ANY Code — Mandatory Checklist
+1. **Read the task** from `docs/IMPLEMENTATION_PLAN.md`. Understand the objective, scope, prerequisites, and acceptance criteria.
+2. **Read referenced docs** — the task specifies which TRD/ARCHITECTURE sections to reference. Read them.
+3. **Search for existing code** — Before creating any file, function, component, hook, type, or module:
+   - Search the codebase by name, functionality, and related keywords.
+   - Check `src/shared/`, `src/lib/`, `src/hooks/`, `src/components/ui/`, `src/types/`.
+   - If something similar exists, extend or reuse it — do NOT create a parallel version.
+4. **Check prerequisites** — Verify that prerequisite tasks are completed and their code exists.
+
+## While Writing Code
+- Write the **minimum viable implementation** that satisfies all acceptance criteria.
+- Do NOT add features, endpoints, or UI elements that belong to other tasks.
+- Do NOT create placeholder functions with `// TODO` for future tasks.
+- Do NOT add optional parameters or abstractions for hypothetical future use.
+- Prefer importing from shared layers over writing inline logic.
+- If you need a utility that should be shared, add it to the shared layer — not inline.
+
+## After Writing Code (Definition of Done)
+1. Push the feature branch to the remote your pipeline watches and let **CI** run the gate
+ (reference build: **`<prefix>-ci-<env>` CodeBuild**; lint + typecheck + unit tests + build). Do
+ **not** run lint/tests/`tsc` locally as the proof — verification is cloud-only (see
+ `cloud-first-verification.mdc`). `terraform fmt` is
+ the only local check allowed.
+2. Merge via **Pull Request** (gated on CI green), which triggers the **deploy pipeline** to
+ AWS dev, then **verify with a shown artifact** (browser screenshot of the dev CloudFront
+ URL, CloudWatch log/request-id, CodeBuild log, or live API response). Never claim done from
+ a local run alone (F-G1, F-C1).
+3. For UI changes, show the result and get sign-off **before** S3 sync / CloudFront.
+4. Update the Implementation Log in `docs/IMPLEMENTATION_PLAN.md` (files, key decisions, date).
+5. Record any **deferred work / decisions** in the implementation log so the next chat
+   doesn't drop or duplicate it (F-F4, F-F5, F-H1). Leave no orphaned background processes.
+
+## File Creation Rules
+- **Never create a file without first checking** if one with the same purpose exists.
+- Component files: check `src/components/` tree.
+- Hook files: check `src/hooks/`.
+- Type files: check `src/types/`.
+- Lambda functions: check `src/functions/`.
+- Terraform modules: check `modules/` in the terraform-modules repo.
+- If a file exists with a different name but same purpose, refactor it — don't create a duplicate.
+
+## Dependencies
+- Before adding an npm package, check if the functionality is already covered by an existing dependency.
+- Prefer packages already in `package.json`. Check existing deps with `npm ls` or read `package.json`.
+- Never add two packages that do the same thing (e.g., don't add both `axios` and `ky` — use the API client pattern in `src/lib/`).

@@ -1,0 +1,75 @@
+---
+description: Tailwind CSS design system, glassmorphism, neumorphism, and styling conventions
+globs: "**/*.tsx,**/*.css"
+alwaysApply: false
+---
+
+# Design System & Styling
+
+All tokens here come from the design tokens defined in `tailwind.config.ts`
+during Phase 5.1. The single source of truth for the brand palette / type scale
+/ motion tokens is **TRD §3.6 – §3.9**.
+
+## Tailwind-First
+- Use Tailwind utility classes for all styling. No inline `style={}` except for dynamic values (e.g., CSS custom properties for 3D transforms).
+- Use `tailwind-merge` (`cn()` helper) to merge conditional classes without conflicts.
+- Use `class-variance-authority` (CVA) for component variants.
+- Never hardcode hex values — always reference Tailwind tokens (e.g. `bg-brand-primary-500`, `text-brand-text`, `bg-success`).
+
+## Brand Palette (TRD §3.6)
+- `brand-primary` (DEFAULT `<hex>`) — primary CTA, success states, brand accent.
+- `brand-dark` (DEFAULT `<hex>`) — dark-mode background, hero overlay.
+- `brand-secondary` (DEFAULT `<hex>`) — links, informational accents, secondary CTA.
+- `brand-text` (DEFAULT `<hex>`) — body text, headings.
+- `brand-muted` (DEFAULT `<hex>`) — secondary text, icons, borders.
+- `brand-surface` (DEFAULT `<hex>`) — light-mode background, card surfaces.
+- All brand tokens expose a 50–950 shade scale plus `DEFAULT` (e.g. `bg-brand-primary` = 500).
+- ⚠️ `brand-legacy` is **deprecated** — kept as a non-breaking alias to `brand-secondary` so Phase 0.1 placeholder pages still render. Refactor any usage onto `brand-primary`/`brand-secondary` per TRD §3.6 when touching a file.
+
+## Semantic Colors
+- `bg-success` / `bg-warning` / `bg-error` / `bg-info` map to TRD §3.6 light-mode values.
+- Dark-mode variants exposed as `bg-success-dark`, `bg-warning-dark`, etc. (apply via `dark:bg-success-dark`).
+
+## Typography (TRD §3.7)
+- Headings: `font-heading` → Inter (variable, loaded via Google Fonts in `index.html`).
+- Body: `font-body` → system stack (`-apple-system`, `Segoe UI`, etc.).
+- Mono: `font-mono` → JetBrains Mono → Fira Code → `ui-monospace`.
+- Type scale (`text-xs` through `text-6xl`) ships with TRD-spec weight + line-height baked in. Two extra tokens (`text-display-1`, `text-display-2`) reserved for the 3D hero / large editorial moments.
+
+## Spacing & Layout (TRD §3.8)
+- 4px base unit — Tailwind's default scale already matches.
+- Container max-widths: `sm:640`, `md:768`, `lg:1024`, `xl:1280`, `2xl:1440` (note: 2xl widened to 1440px in Phase 5.1).
+
+## Glassmorphism (TRD §3.1)
+- `glass-card` — frosted card with backdrop blur, alpha, border.
+- `glass-nav` — sticky navigation bar with `backdrop-blur(20px) saturate(180%)`.
+- `glass-dialog` / `glass-dialog-overlay` — modal surfaces and dim layer.
+- All variants ship with a `dark:` counterpart. Use these utilities — do **not** reinvent glassmorphism inline.
+- Backdrop blur tokens: `backdrop-blur-glass` (12px) and `backdrop-blur-glass-heavy` (24px).
+
+## Neumorphism (TRD §3.2)
+- `neu-input` — recessed/sunken form inputs (focus ring is `brand-primary`).
+- `neu-button` — raised tactile button with pressed-state inversion.
+- `neu-toggle` / `neu-toggle-knob` — physical-feeling toggle switch.
+- Light + dark mode variants are pre-baked via `.dark .neu-*` rules.
+- Box-shadow presets also exposed as Tailwind tokens for ad-hoc surfaces: `shadow-neu-raised`, `shadow-neu-pressed`, `shadow-neu-inset`, plus `*-dark` variants.
+
+## Responsive Design
+- Mobile-first: base styles are mobile, then `sm:`, `md:`, `lg:`, `xl:`, `2xl:`.
+- Breakpoints: `sm` (640px), `md` (768px), `lg` (1024px), `xl` (1280px), `2xl` (1440px) — TRD §3.8 / §7.4.
+- Test all layouts at 360px (small Android), 390px (iPhone), 768px (tablet), 1280px+ (desktop).
+
+## Dark Mode
+- Configured via the `class` strategy (`darkMode: ['class']`). Theme toggle stores preference in `localStorage` and toggles a `dark` class on `<html>`.
+- All glassmorphism and neumorphic effects must have dark mode variants.
+- Never hardcode `bg-white` or `text-black` without a `dark:` counterpart — prefer `bg-background` / `text-foreground` so the shadcn/ui CSS variables drive the palette.
+
+## Animation
+- CSS-side duration tokens (TRD §3.9): `duration-micro` (150ms), `duration-short` (250ms), `duration-medium` (400ms), `duration-long` (700ms).
+- CSS-side easing tokens: `ease-out`, `ease-in`, `ease-in-out` are wired to TRD `cubic-bezier` curves; `ease-spring-bounce` covers the playful neumorphic toggle.
+- Micro-interactions: Framer Motion (`motion.div`). Keep animations under 300ms for UI responses.
+- Scroll animations: GSAP ScrollTrigger. Use `gsap.context()` for cleanup.
+- 3D scenes: React Three Fiber or Spline. Lazy-load, never block initial render.
+- Lottie: for loading states and illustrated transitions. Keep files under 100KB.
+- NEVER animate `width`, `height`, or `top/left` — use `transform` and `opacity` only for performance.
+- All animations respect `prefers-reduced-motion: reduce` (enforced in `globals.css`).

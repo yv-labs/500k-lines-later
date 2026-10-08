@@ -1,0 +1,165 @@
+---
+description: Terraform infrastructure-as-code standards for AWS deployment
+globs: "**/*.tf"
+alwaysApply: false
+---
+
+# Terraform Conventions
+
+## IaC Tool: Terraform 1.7+ Only
+- No AWS CDK, no CloudFormation templates, no Pulumi. Terraform is the sole IaC tool.
+- State: S3 backend + DynamoDB state locking. Configure in `<infra>/backend.tf`.
+- Provider: `hashicorp/aws` provider, `<region>` as default region.
+
+## Repository Structure
+
+### <terraform-modules> (reusable DRY modules)
+```
+modules/
+  vpc/
+  cognito/
+  aurora/
+  lambda/
+  api-gateway/
+  dynamodb/
+  s3-cloudfront/
+  eventbridge/
+  codepipeline/
+  waf/
+  monitoring/
+```
+
+### <infra> (environment configs)
+```
+environments/
+  dev/
+    main.tf        # Module calls
+    variables.tf
+    terraform.tfvars
+    backend.tf
+  staging/
+  prod/
+```
+
+## Module Standards
+- Every module has: `main.tf`, `variables.tf`, `outputs.tf`, `README.md`.
+- All variables have `description`, `type`, and `default` (where sensible).
+- All outputs have `description`.
+- Use `validation {}` blocks for input constraints.
+- Tag all resources with: `Project = "<project>"`, `Environment`, `ManagedBy = "terraform"`.
+
+## Coding Style
+- Use `terraform fmt` and `terraform validate` before committing.
+- Resource naming: `aws_<service>_<descriptive_name>` (e.g., `aws_lambda_function.order_handler`).
+- Local values for computed names: `local.prefix = "${var.project}-${var.environment}"`.
+- Use `for_each` over `count` when resources are keyed by name.
+- Data sources for cross-stack references — no hardcoded ARNs.
+
+## Lambda in Terraform
+
+```hcl
+resource "aws_lambda_function" "order_handler" {
+  function_name = "${local.prefix}-fn-order-handler"
+  runtime       = "nodejs22.x"
+  architectures = ["arm64"]
+  handler       = "index.handler"
+  memory_size   = 256
+  timeout       = 30
+  # ... other config
+}
+```
+
+- Runtime: pin ONE runtime per language across all functions (reference build: `nodejs22.x`, Node.js 22 LTS); don't let older runtimes or a second language creep in function-by-function.
+- Architecture: `arm64` (Graviton2) for all Lambda functions.
+
+## Security
+- Never hardcode secrets. Use `aws_secretsmanager_secret` or `aws_ssm_parameter`.
+- IAM: least-privilege policies. One role per Lambda function domain.
+- Enable encryption at rest for all data stores (S3, Aurora, DynamoDB).
+- IAM modules for Lambdas that use RDS Proxy IAM auth MUST receive `rds_proxy_name` +
+  `rds_proxy_db_users` so `rds-db:connect` is granted (F-C8).
+- **WAF scope must match the traffic path (F-O1).** A `CLOUDFRONT` Web ACL only inspects
+  requests that traverse CloudFront. The SPA calls the REST API's `execute-api` endpoint
+  **directly**, so API protection (SQLi/XSS managed groups + auth/upload rate limits) needs a
+  **REGIONAL** ACL associated with the API-Gateway **stage** (`aws_wafv2_web_acl_association` →
+  `arn:aws:apigateway:<region>::/restapis/<id>/stages/<stage>`), not the edge ACL. Prove blocking
+  with a live request: clean → 200, attack → 403 with the expected `terminatingRuleId` in the WAF
+  CloudWatch log, and rate rules that actually **trip** (n×pass → then 403). WAFv2 rate-based
+  floor is `limit>=10` over a max 600 s window (exact "N/hour" often isn't expressible); OTP that
+  goes to Cognito (`cognito-idp`) directly can't be WAF-limited — rely on Cognito throttling.
+- **Prefer inline `#checkov:skip=<id>:<why>` over `.checkov.baseline` edits for genuine
+  IaC-scanner false-positives (F-O3)** — e.g. Checkov under-resolves managed rule groups added
+  via multiple `dynamic "rule"` blocks (false `CKV_AWS_192`), and its graph checks (`CKV2_*`)
+  can't resolve `count`-indexed cross-resource links (a `count`-gated S3 bucket + its
+  `public_access_block`/`lifecycle`, or a `count`-gated SG attached to `for_each` VPC endpoints →
+  false `CKV2_AWS_6/61/5`). Inline skips are self-documenting, DRY across module consumers, and
+  immune to baseline resource-address matching quirks.
+- **SG rule *descriptions* have a restricted charset — and only `apply` enforces it (F-Q1).**
+  `aws_vpc_security_group_(in|e)gress_rule.description` accepts only `a-zA-Z0-9`, space, and
+  `. _-:/()#,@[]+=&;{}!$*` — **no `>`/`<`** (so `->` breaks it). `terraform validate` and the CI job
+  (reference build: `<prefix>-ci-dev`) pass; the pipeline `apply` fails with `InvalidParameterValue`. Another **`validate` ≠ `apply`**
+  case (cf. F-N2): the real gate is the infra pipeline's apply, not CI.
+- **VPC endpoints + `lambda-sg` egress lock-down are a COUPLED, all-or-nothing change (F-Q2).**
+  Add endpoints (Gateway on the private route tables; Interface with Private DNS + a dedicated
+  endpoint SG whose **ingress** allows 443 from `lambda-sg`/`rotation-sg`) **before** replacing
+  the `0.0.0.0/0` catch-all with least-privilege egress. Sequencing "endpoints before egress" is
+  necessary but **not sufficient**: the egress rules and the catch-all removal have no TF
+  dependency on the endpoint-SG *ingress*, so a mid-apply failure can lock egress to an endpoint
+  SG that has no ingress — with Private DNS, in-VPC AWS-API calls then resolve to endpoints that
+  **deny** them, actively cutting Lambdas off. After any such apply, **verify functional
+  reachability** (a post-apply synthetics canary hitting an endpoint service, or a live invoke) —
+  not just the static SG rules. Keep these behind opt-in flags (default off) so shared-module
+  consumers don't inherit them (F-I3). Note some AWS APIs have **no in-region endpoint** (Cost
+  Explorer `ce` is global/us-east-1; cross-region CloudWatch/WAF metrics) — a full egress removal
+  breaks them, so a narrow `443→0.0.0.0/0` is a deliberate, documented trade-off.
+
+## Operational Hygiene (hard-won — see your project's retrospective)
+- **Wire every module before claiming a phase done.** Each `environments/<env>/main.tf`
+  module call needs a real `source` and required inputs. A missing/typo'd `source` makes
+  `terraform init` fail silently across all envs (F-C2).
+- **Keep env configs and module signatures in lockstep.** When a module's variables change,
+  update dev/staging/prod call sites in the same change (F-C4).
+- **API Gateway — ONE authoritative redeploy path, fed by EVERY route (F-C3 / 16.38d).** Add
+  `depends_on` for integrations and a redeploy trigger (`triggers = { redeploy = sha1(...) }`) so
+  deployments never fire before integrations exist. Crucially, when routes are defined **outside**
+  the `api-gateway` module (in `environments/<env>/*-service.tf` method/integration resources),
+  they do **not** feed the module's own trigger — so the live stage silently **drifts** behind the
+  method config and authed routes start returning **404** (the root cause of the 16.38 journeys/
+  product/response-filtering flakes). Fix pattern:
+  - Keep a **single** authoritative redeploy path: the module's `aws_api_gateway_deployment`. The
+    module exposes `extra_redeploy_trigger`; the env feeds it a hash of **every out-of-module
+    method + integration id** (see `environments/dev/api-redeploy-trigger.tf`). Any route add/
+    remove/reconfigure then rolls a fresh, complete stage deployment.
+  - **Delete scattered `null_resource` + `local-exec` "redeploy" hacks.** They run outside the
+    assumed-role provider (CI-fragile), race the TF-managed deployment, and let the stage drift.
+    20 of them were retired in 16.38d.
+  - **Reference the method/integration resources DIRECTLY** in the hash — never the stage or a
+    `null_resource` — to keep the graph **acyclic**: `rest_api → methods/integrations → deployment
+    → stage`. A stage→lambda→integration→deployment cycle was broken by making the stage name a
+    stage-independent `local` constant (`local.api_stage_name`) instead of reading it back.
+  - **Hash `for_each`/`count` route resources as whole collections**
+    (`[for _k, _v in aws_api_gateway_method.x : _v.id]`), so adding a new key still changes the
+    hash. Referencing a single `.id` on a `for_each` resource both fails `terraform validate` and
+    misses new keys — don't "simplify" it back.
+- **Run a drift check before apply.** Read the full `terraform plan`; if it shows
+  unrelated drift (deleted ACM certs, stray EventBridge targets), use a **targeted apply**
+  for your resources rather than clobbering other work (F-C5).
+- **Verify live, then declare done.** `plan` clean is necessary but not sufficient — confirm
+  the resource exists in `<region>` (account `<account-id>`) and behaves (browser /
+  CloudWatch). "Claimed done with nothing in AWS" is a banned outcome (F-C1).
+- **Alarms must be cost-justified and thresholds sane.** Don't over-provision (182→22 lesson);
+  double-check alarm comparison direction so a healthy metric doesn't always fire (F-C6, F-C9).
+- **Shared-module behavior flags default conservative (opt-in).** A bool that changes behavior
+  (e.g. `cloudfront_spa_routing`) must default `false` so the many consumers of a reusable
+  module don't all inherit it — a `true` default made 8 `s3-cloudfront` consumers each try to
+  create the same-named CloudFront function, an un-appliable name collision (F-I3).
+- **Adopt out-of-band resources with `import`, don't recreate.** When a resource was created
+  surgically (CLI/console), add an `import {}` block (or `terraform import`) so the resource
+  block takes ownership; otherwise apply fails "already exists" or reverts it (F-I3).
+- **SPA-on-CloudFront routing** uses a `viewer-request` CloudFront Function that rewrites only
+  extensionless nav paths to `/index.html`; never a distribution-wide `custom_error_response`
+  (403/404→/index.html), which masks a missing asset as the HTML shell and breaks `import()`
+  with a strict-MIME error that edge-caches (F-I4 / FC-10).
+- **Local terraform that writes state must match the pipeline/state version.** A newer local
+  binary upgrades the state and locks out the pipeline; pin/download the pipeline's version for
+  any local bootstrap/import, and prefer a **targeted** apply (`-target`) for bootstrap (F-I2).

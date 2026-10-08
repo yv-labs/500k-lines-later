@@ -1,0 +1,63 @@
+---
+description: Deterministic, leak-free tests — no time-bombs, clean runner exit
+globs: "**/*.test.ts,**/*.itest.ts,**/*.spec.ts,**/test/**/*.ts,**/e2e/**/*.ts"
+alwaysApply: false
+---
+
+# Testing Standards
+
+## Determinism — never write a time-bomb
+A fixture that hard-codes a near/relative date silently rots: it passes the day it's written
+and goes red later with **no code change**. We shipped `expires_at: '2026-06-15'` and
+the suite broke 2 days later. Treat the clock as a declared input:
+
+- For "open / not-yet-expired" fixtures use a **far-future sentinel** (`2099-12-31T23:59:59Z`);
+  for "closed/expired" use a far-past one. Never pick a date near "now".
+- When behaviour depends on the *current* time, **freeze the clock** — `vi.setSystemTime(new Date('2026-01-15T12:00:00Z'))`
+  — or inject a `Clock` / `now()` dependency and pass a deterministic one in tests. Prefer DI
+  over global fake timers for business logic.
+- Pair every `vi.useFakeTimers()` with `vi.useRealTimers()` in `afterEach`; never leak fake timers across tests.
+- Set `TZ=UTC` in CI so date math is timezone-stable.
+- Never use test `retry` to paper over flakiness — fix it, or quarantine with an owner + deadline.
+
+## Clean runner exit — no hanging handles
+A suite that logs `close timed out after Nms` has a leaked handle and burns CI minutes.
+
+- Any `Promise.race([fn(), timeout])` MUST `clearTimeout` the loser in a `finally`; a bare race
+  leaves the timer pending and keeps the event loop (and the Vitest process) alive.
+- Tear down what you open — AWS SDK clients, DB pools, and the global `fetch`/undici dispatcher —
+  **per worker** (a `setupFiles` `afterAll`), not only in global setup.
+- Diagnose leaks with `vitest --reporter=hanging-process`.
+
+## Cloud-backed suites
+Integration / E2E / security tests run against **deployed AWS dev**, not local emulation
+(see `cloud-first-verification.mdc`). Run auth-heavy suites with `--no-file-parallelism` (or
+`--workers=1`, and prefer a dedicated serial `--project=auth` run for the pass/fail signal) to
+avoid cumulative Cognito throttling **and** lazy-chunk download contention. A full all-projects
+E2E run can produce **flaky auth timeouts on correct code** purely from parallel contention —
+when the suite is red, isolate auth before concluding the app is broken, and check whether prior
+runs were already red (pre-existing debt vs. your regression) before chasing a fix.
+
+## E2E flake triage — no whack-a-mole (mandatory process)
+The E2E suite runs the same specs on chromium + firefox + webkit against deployed dev. Its
+failures are mostly non-deterministic *readiness* races (code-split chunk load, entry load,
+hydration, auth rehydrate) and they **rotate across browsers run-to-run**. Fixing the one
+(test × browser) cell that was red this run, then re-running, has repeatedly just moved the red
+cell to another browser (chromium↔firefox↔webkit) — real, recurring whack-a-mole on this repo.
+
+When an E2E/journey run is red or flaky, **follow the `e2e-flake-triage` skill**. Non-negotiables:
+- **Append the Run Ledger row in your E2E flake log (reference build: `docs/test/E2E_FLAKE_LOG.md`) first**, then diff vs the previous
+  run. A green→red cell is a **P0 regression** (your last change broke it) — fix that before anything.
+- Diagnose the **unifying root cause** that explains the variants on *all* browsers; don't patch
+  a single cell. Browser timing differences are a symptom of one shared non-determinism.
+- A fix is valid only if you can state **why it cannot regress a currently-green cell**.
+- A failure class is **not** "fixed" until it is green on **all 3 browsers for ≥3 consecutive
+  runs**, zero regressions. **Flaky-passed-on-retry is NOT green.** Never mark FIXED off one run.
+
+## Don't re-couple a render to a lazily-loaded SDK
+When an SDK is code-split off the critical path (e.g. Amplify behind `authModule()`), reach it
+**only through the single dynamic entry point that awaits its configuration** — never a static
+`import … from '<sdk>'` on a render-critical route. A static import re-blocks render on the
+SDK chunk download (slow/flaky under CI contention) and reintroduces a configure-before-call
+race the moment any render gate is removed (symptom: `"<X> not configured"` on a fast
+programmatic submit). Fixed once in 16.5.1 — see its Implementation Log "Auth E2E hardening".

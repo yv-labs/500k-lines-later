@@ -1,0 +1,91 @@
+---
+description: Database schema conventions for Aurora PostgreSQL and DynamoDB
+globs: "**/*.ts,**/*.sql"
+alwaysApply: false
+---
+
+# Database Conventions
+
+## Aurora Serverless v2 (PostgreSQL) — relational tables
+- Reference `docs/TRD.md §5` for the canonical schema with all columns, FKs, and indexes.
+- Migrations via Knex.js in `<api-package>/src/migrations/`. Sequential, timestamped filenames.
+- All tables have: `id` (UUID PK, `gen_random_uuid()`), `created_at`, `updated_at` (auto-managed via trigger).
+
+## Naming Conventions
+- Tables: `snake_case` plural (`customer_accounts`, `order_items`, `invoice_records`)
+- Columns: `snake_case` (`verification_status`, `fulfilment_lead_days`, `quoted_amount`)
+- Foreign keys: `<referenced_table_singular>_id` (e.g., `customer_account_id`, `order_id`)
+- Indexes: `idx_<table>_<column(s)>` (e.g., `idx_customer_accounts_region_id`)
+- Enums: define as PostgreSQL `CREATE TYPE` (e.g., `verification_status_enum`)
+
+## Key Schema Rules
+- `cognito_sub` links to Cognito User Pool — never store Cognito passwords or tokens in the DB.
+- Sensitive identifiers (`<national-id>`, `<tax-id>`): store SHA-256 hash only, never plaintext (see `security-compliance.mdc` for the documented hash + encrypted hybrid exception).
+- JSONB columns for flexible data: `notification_preferences`, `shipping_details`, `line_item_options`.
+- Full-text search: `tsvector` column + `GIN` index for catalog/order search.
+
+## Concurrency, sequences & idempotency (Phase 16.27 — F-L1..L3)
+Race bugs pass sequential tests and only fail under a concurrent burst; assert the **durable DB
+invariant** (exact counts / single winner / counter delta), not just the HTTP status.
+- **"Read-max-then-write-next" (sequence minting) needs serialisation, not a row lock.** A
+  `SELECT … FOR UPDATE` on the current-max row locks *nothing* when the table/partition is empty and
+  doesn't stop a second txn from reading the same max and writing the same next value (F-L1 —
+  `ORD-YYYY-NNNN` collided on the UNIQUE index → HTTP 500). Use a transaction-scoped
+  **`pg_advisory_xact_lock(namespace, key)`** (released on commit/rollback → gap-free) or a real
+  sequence, keyed on the sequence scope (e.g. year).
+- **App-layer dedup via SELECT followed by INSERT is a TOCTOU** under at-least-once delivery / concurrent
+  callers (F-L2). Prefer a **UNIQUE index + `INSERT … ON CONFLICT DO NOTHING/UPDATE`**. When a
+  UNIQUE constraint is deliberately *absent* (e.g. `notifications` allows multi-channel resend),
+  make the check + insert atomic instead: group by the dedup scope, take a **per-scope
+  `pg_advisory_xact_lock`** in one transaction, re-check under the lock, then insert only the
+  missing rows. Don't add a broad unique index that breaks legitimate repeat rows.
+- **Never send a NUL byte (`\u0000`) in a Postgres `text`/`varchar` bind parameter** — it raises
+  `error 22021: invalid byte sequence for encoding "UTF8": 0x00` and throws on *every* call
+  (F-L3, self-inflicted via a `\u0000`-joined advisory-lock key → 0 rows written). Use a non-NUL
+  delimiter such as the ASCII Unit Separator `0x1F` when composing a string bind param.
+- When a fix changes the failure mode (e.g. duplicate→zero rows), it's a **new** root cause — read
+  the **service** CloudWatch logs, not just the test assertion.
+
+### Fixed-width identifiers are latent capacity caps + lexicographic-ordering traps (Phase 16.26 — F-Y1/F-Y2)
+A zero-padded fixed-width id (`ORD-YYYY-NNNN`, 4-digit tail) is a **hard ceiling** (here
+9,999/yr) that no correctness test catches — only load does. Two coupled rules:
+- **Give the ceiling a graceful, typed failure.** At exhaustion, throw a mapped domain error (a
+  `ServiceUnavailableError` → **HTTP 503**), never let it surface as an opaque 500. Size the width
+  for realistic multi-year/multi-region scale from the start (or make it variable-width), and prefer
+  a variable/wider tail (backward-compatible: values below the old cap still render zero-padded).
+- **Widening a fixed-width field silently breaks every lexicographic order on it.** Once the tail
+  grows past its old width, `ORDER BY <text_id> DESC LIMIT 1` is WRONG — `"…-9999"` sorts **above**
+  `"…-10000"` (`'9' > '1'`), so a "read max then +1" minter recomputes a colliding value → UNIQUE
+  violation 500s. When you widen (or ever suspect variable width), compute the max **numerically**
+  from the digit suffix (`MAX((substring(id FROM '[0-9]+$'))::int)`), not by string ordering. Audit
+  every `ORDER BY`/`MAX`/`>`/`<` that assumes the old fixed width. (Classic stacked root cause:
+  fixing the cap exposed the ordering bug — per `systematic-debugging.mdc`, find ALL of them.)
+
+## DynamoDB — high-write / real-time tables
+| Table | PK | SK | Purpose |
+|-------|----|----|---------|
+| `ws_connections` | `connectionId` | — | WebSocket tracking |
+| `chat_messages` | `threadId` | `timestamp#messageId` | Real-time chat |
+| `notifications` | `userId` | `timestamp#notificationId` | Push notifications |
+| `activity_logs` | `entityType#entityId` | `timestamp#logId` | Audit trail |
+| `order_status_updates` | `orderId` | `timestamp#updateId` | Real-time order status |
+
+- All DynamoDB tables have TTL configured for data lifecycle management.
+- Use single-table design principles within each table (composite sort keys).
+
+## Naming history (Amendment v1.3)
+- Some tables were renamed mid-project; the migration history (and older docs) keep the old
+  names. Use the current names in new code, but grep for **both** old and new names when
+  searching for usages or tracing a column's history.
+
+## Migration Rules
+- One migration per logical change. Never combine unrelated table changes.
+- Always include `up()` and `down()` functions.
+- Test `down()` migration before committing.
+- Never modify a migration that has been applied — create a new one.
+- **Carry derived objects on rename/restructure.** When renaming a table/column, the
+  migration must also move its indexes, FKs, triggers, and especially `tsvector`/`GIN`
+  full-text-search columns — they do not follow automatically (F-D6).
+- **Backfill when tightening constraints.** Adding/strengthening a CHECK (e.g. phone regex)
+  fails on existing rows that violate it — include a data backfill/repair step in the same
+  migration (F-D4). Phone numbers are **international**; make the country code optional.

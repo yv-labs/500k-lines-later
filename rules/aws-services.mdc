@@ -1,0 +1,52 @@
+---
+description: "AWS service usage patterns and constraints for an AWS-serverless platform. Use when choosing, configuring or wiring an AWS service (Lambda, API Gateway, Aurora, DynamoDB, Cognito, S3, CloudFront, SQS/EventBridge, Textract), writing IAM policies, or deciding how a workload should be hosted."
+alwaysApply: false
+---
+
+# AWS Service Conventions
+
+## Authentication — Amazon Cognito
+- User Pool with the project's primary sign-in method plus social IdPs as secondary (reference build: phone-OTP via SNS/Pinpoint, Google OAuth).
+- PKCE flow for the SPA — no client secrets in frontend code.
+- Use `cognito_sub` (UUID from Cognito) as the foreign key in Aurora `profiles` table.
+- Never store Cognito tokens in localStorage — use `aws-amplify` auth module with secure storage.
+
+## Compute — Lambda
+- REST API + event-driven functions (the function count grows with each phase). Treat your TRD's function inventory (e.g. `docs/TRD.md §9`) as canonical; don't assume a fixed count.
+- Use AWS SDK v3 (modular imports): `@aws-sdk/client-s3`, `@aws-sdk/client-ses`, etc.
+- Never import the entire `aws-sdk` v2 package.
+- Environment variables for all config (table names, bucket names, Cognito pool IDs).
+
+## API Gateway
+- REST API for CRUD endpoints (Lambda proxy integration).
+- WebSocket API for real-time chat and workflow-status updates.
+- Always enable CORS with explicit allowed origins (not `*` in production).
+- Use Lambda Authorizers (not IAM auth) for API Gateway.
+
+## Storage — S3
+- `<project>-public-assets` — static site hosting via CloudFront.
+- `<project>-private-docs` — user-uploaded documents, identity checks, contracts. Access via pre-signed URLs only.
+- Set lifecycle rules: move infrequently accessed docs to S3-IA after 90 days.
+- Block all public access on private bucket.
+
+## Messaging
+- **SNS** — push notifications and internal event fan-out.
+- **SES** — transactional emails (verification, status updates, confirmations).
+- **Pinpoint** — SMS for OTP delivery.
+- Use EventBridge for scheduled tasks and cross-service event routing.
+
+## Monitoring
+- CloudWatch Logs for all Lambda functions.
+- CloudWatch Alarms for error rates, latency P95, DynamoDB throttling.
+- X-Ray tracing enabled on Lambda + API Gateway.
+
+## CI/CD — AWS Native
+- Principle: one source-of-truth remote, one pipeline-as-code definition, and the pipeline (not a
+  laptop) is the gate. Example from the reference build: **AWS CodeCommit (`<repo>`, `<region>`) →
+  CodePipeline → CodeBuild**, pushing directly to the `codecommit` remote (no GitHub Actions). All
+  pipelines are defined in Terraform (`<infra>`).
+- CodeBuild uses `buildspec.*.yml` (web / api / infra / e2e) at the monorepo root.
+- Build-time config (`VITE_*`, table/bucket names) comes from **SSM Parameter Store**
+  (`/<project>/<env>/...`) read by CodeBuild — never committed `.env` files.
+- Pushes go to whichever remote the pipeline watches (reference build: CodeCommit via
+  `AWS_PROFILE=<account-id>` and the `git-remote-codecommit` helper); see `git-workflow.mdc` and `cicd-first.mdc` for the full CI/CD policy and known gaps.

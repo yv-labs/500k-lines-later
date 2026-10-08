@@ -1,0 +1,80 @@
+---
+description: "Security, data protection, and sensitive-data handling rules. Use when touching authentication or authorization, personal or sensitive data, secrets and config, file uploads, logging of user data, data retention/deletion, or any public (unauthenticated) endpoint."
+alwaysApply: false
+---
+
+# Security, Data Protection & Sensitive-Data Handling
+
+## Data Protection (applicable data-protection law, GDPR-class)
+- Collect minimum necessary personal data. Document purpose for each field.
+- Provide data deletion mechanism for users (right to erasure).
+- Provide a self-service data export (right of access/portability), with sensitive fields redacted per the rules below.
+- Define a retention period per personal-data category and enforce it (TTL / scheduled purge).
+- Consent must be explicit — no pre-checked boxes.
+- Personal data stored in the relational DB must be identifiable for deletion requests.
+
+## Sensitive Data Handling
+- **`<national-id>`**: store as SHA-256 hash only (hashed client-side; `national_id_hash`). Never
+  plaintext, never reversible, never in logs.
+- **`<tax-id>`**: store as a HYBRID pair, never as plaintext in a queryable column (Phase 16.33):
+  - `tax_id_hash` — deterministic SHA-256 hex (64 lowercase) for the UNIQUE constraint + admin
+    exact-match search. Satisfies the "hashed" requirement; treat as sensitive (low-entropy,
+    enumerable) — never expose publicly.
+  - `tax_id_encrypted` — KMS envelope ciphertext (`src/shared/crypto/tax-id.ts` on the shared
+    field-encryption CMK), reversible ONLY by roles holding `kms:Decrypt` on that CMK. This is
+    a deliberate, documented deviation from "hash only" so **admin identity verification can
+    read the value back** to reconcile it against uploaded documents. Read is restricted to the
+    owning party (self) + the admin verification service + the document processor (OCR
+    cross-check). Never in logs; never in the self-service data export (redacted there — the
+    admin verification flow is the reveal path).
+    A future hardening phase may upgrade `tax_id_hash` to a KMS-keyed HMAC if enumeration risk
+    warrants (the 64-hex column shape is compatible).
+- **Phone numbers**: displayed **masked** (e.g. `<country-code> ****XX78`, shared `maskPhone()`)
+  in any surface a non-authorized caller can reach; authorized staff (admin/operator) and the
+  owner see the full number. At-rest phone encryption is a tracked future hardening item
+  (deferred — no plaintext phone in logs meanwhile).
+- **Party documents**: stored in S3 private bucket, accessed via time-limited pre-signed URLs (15 min max).
+- **API keys / secrets**: AWS Secrets Manager or SSM Parameter Store. Never in code, env files, or git.
+
+## Input Validation & Sanitization
+- Validate all inputs server-side with Zod schemas, even if client-side validation exists.
+- Sanitize HTML content with DOMPurify before rendering user-generated content.
+- Rate-limit all public endpoints (API Gateway throttling + WAF rules).
+
+## Authentication Security
+- Cognito PKCE flow — no implicit grant.
+- Access tokens: 1 hour expiry. Refresh tokens: 30 days.
+- Force MFA for admin and internal-operator roles.
+- Lock accounts after 5 failed login attempts (Cognito built-in).
+
+## Security Testing — probe correctness (so a green/red result means something)
+- **Never mutate the TRAILING character of a base64url payload to prove tamper-rejection.** For a
+  fixed-length binary (a JWT signature, hash, or MAC), the last base64url char carries mostly
+  **padding bits**, so flipping it (e.g. `A→B`) decodes to **byte-identical** bytes a predictable
+  fraction of the time — the "tampered" token still verifies and the probe FALSE-passes/fails
+  intermittently (F-N5: a Cognito RS256/RSA-2048 sig is 256 B → 342 base64url chars whose final
+  char has only 2 significant + 4 padding bits; the `A→B` flip was a no-op ~25% of nights → a
+  phantom S0 "auth bypass"). Instead tamper an **interior** char (always 6 significant bits) or
+  **decode → flip a byte → re-encode**. Prove the mutation actually changes the decoded bytes.
+- **An intermittently passing/failing security test is itself a defect** — treat it as a bug in the
+  probe or the system, never "flaky, re-run" (see `systematic-debugging.mdc`). Verify a probe's
+  verdict by its real effect, not its printed label.
+
+## Authorization (Lambda RBAC)
+- Every API handler checks user role before executing business logic.
+- Data-level filtering: queries add `WHERE` clauses based on role.
+- Owner-scoped access: a non-admin caller can only see/modify records it owns — scope every query by the caller's own id/tenant from the token, never from request input.
+- Public (unauthenticated) endpoints return only what the public surface needs — never individual private records.
+
+## Jurisdiction-specific validations (fill in)
+> Replace these placeholders with the regulations that apply to your jurisdiction and industry.
+- `<tax-id>` format: validate with `<tax-id-regex>` server-side (Zod) and client-side.
+- `<licence-number>`: display registration/licence numbers where the regulator requires it.
+- `<financial-disclaimer>`: surfaces that discuss returns or financial outcomes must show the regulator-mandated disclaimers.
+- Identity verification: identity-document OCR (e.g. Textract) with hash-only storage of the extracted `<national-id>` (per the rules above).
+
+## Infrastructure Security
+- HTTPS everywhere (ACM certificates on CloudFront + API Gateway).
+- WAF on CloudFront and API Gateway (OWASP core rule set).
+- VPC for Aurora and RDS Proxy — Lambda in private subnets with NAT gateway.
+- Enable CloudTrail for audit logging of all AWS API calls.

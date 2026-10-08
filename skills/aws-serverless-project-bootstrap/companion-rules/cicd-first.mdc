@@ -1,0 +1,174 @@
+---
+description: CI/CD-first — the pipeline is the deployment path from day one, not a final phase
+alwaysApply: true
+---
+
+# CI/CD-First
+
+CI/CD was added late on this project, so "deploy" was a manual hand-run `s3 sync` +
+CloudFront invalidation in every phase, and the first real pipeline gate surfaced a backlog
+of unrelated tech debt (see your project's retrospective). Treat the pipeline as
+the **only** sanctioned deploy path, wired before feature work.
+
+## Pipeline of record
+- Principle: pick **one** remote of record that your pipeline watches (GitHub, GitLab, and
+  CodeCommit all work) and push only there; never leave a second, unused remote that someone can
+  push to by mistake. The pipeline — not your laptop — is the gate. Pipelines are defined as code,
+  one per package (web / api / infra) per environment.
+- Example from the reference build: **AWS CodeCommit** (`<repo>`, `<region>`, account
+  `<account-id>`) → **CodePipeline** → **CodeBuild**, pushed with
+  `AWS_PROFILE=<account-id> git push codecommit <branch>`; GitHub was deliberately not used (do
+  not push to `origin`). See `git-workflow.mdc` for the push mechanics. Pipelines are defined in
+  Terraform (`<infra>`).
+- Each package has a `buildspec.*.yml` with real **install → lint/test → build → deploy**
+  stages. The deploy stage is not a placeholder.
+
+## Branch → environment mapping (single-track; see `git-workflow.mdc`)
+- **`develop` → dev = FULLY AUTOMATIC, NO manual approval.** The dev pipelines
+  (example topology, reference build: `<prefix>-web/api/infra-pipeline-dev`) trigger on pushes to **`develop`** and deploy without any
+  human gate. All three dev pipeline modules MUST set `enable_manual_approval = false`
+  (web/api: `Source → Build(deploy) → [Test]`; infra: `Source → Build(plan) → Apply(auto)`).
+  A manual-approval stage on a **dev** pipeline is a bug — remove it. Do **not** hand-approve dev
+  gates to "get it working"; fix the terraform so no gate exists.
+- **`main` → prod = manual-approval-gated.** Promoting `develop → main` deploys to prod **behind a
+  manual approval gate** (one human approval before the prod deploy/apply stage). `main` is
+  prod-only; never point a dev pipeline at `main`. Only the **prod** pipeline modules set
+  `enable_manual_approval = true`.
+- Only **dev** and **prod** exist today. `staging` Terraform is kept at parity for the future but
+  has **no live pipeline yet**; wire it (and insert `develop → staging → main`) only when scale
+  warrants — confirm with the user before adding environments/branches.
+
+## Non-negotiables
+- **Build-time config comes from SSM Parameter Store** (`/<project>/<env>/...`), read by
+  CodeBuild — never hand-created `.env` files committed to git.
+- **Fresh build environment per run** — never reuse a stale CodeBuild environment across
+  builds/deploys.
+- **Gates are wired before the feature, not after.** Type checks and coverage thresholds run
+  in CI. Don't lower a coverage gate just to make a red build pass; write the missing test or
+  scope the gate deliberately and record why.
+- Keep **`tsconfig`/build config CI-correct**: build scripts that use Node APIs need
+  `@types/node` and the right `types`; keep `NODE_ENV` consistent between buildspec stages.
+- **Promote, don't rebuild per env**: `develop` → dev (auto, no gate) → **approval** → `main` →
+  prod. The approval sits on the **prod** side only. When a `staging` tier is later added, the
+  chain becomes dev (auto) → approval → staging → approval → prod. Keep staging/prod Terraform at
+  parity with dev so promotion actually works.
+- **Environment differences are config, never code (12-factor parity).** The *same* built
+  artifact must deploy to every env; per-env behavior comes from **SSM/Secrets**, not branching
+  code — so there is no "worked in dev, broke in prod" class of bug. Example (Phase 16.25, F-M2):
+  SEO indexability is `VITE_PUBLIC_SEO_INDEXABLE` (dev=`false`/prod=`true`) + `VITE_PUBLIC_SITE_URL`
+  + a dev-only CloudFront `X-Robots-Tag: noindex` header — identical code, config-driven. Note
+  `robots.txt Disallow:` and `noindex` are mutually exclusive for de-indexing: a non-prod env that
+  must carry full SEO markup yet never be indexed must **allow crawling** and emit `noindex` (meta
+  robots + `X-Robots-Tag`), because a disallowed crawler never sees the `noindex`.
+
+## Know your pipeline's real semantics before relying on it
+Before treating a pipeline as the deploy/verify path, confirm **what it actually does** —
+read the buildspec + pipeline stages, don't assume. The dev **infra** pipeline was
+`Source → Build (terraform plan) → Manual Approval` with **no Apply stage** (apply deferred
+to a never-built phase); the approval gated nothing, so nobody noticed it never applied and
+drift silently accumulated. Web/api pipelines deploy inside their Build buildspec; the dev infra
+pipeline applies in a dedicated `Apply` stage that runs **automatically** right after
+`Build(plan)` (no approval on dev). When you need a behavior the pipeline lacks, wire it as a
+stage (don't keep hand-running it).
+
+**The CI job is NOT the deploy job — a deploy-only step can pass CI and still fail the
+deploy.** In the reference build the CI project (`<prefix>-ci-<env>`) runs
+lint/typecheck/test/build/`tf validate`; the actual deploy build (`<prefix>-web-dev` →
+`buildspec.web.yml`, etc.) runs additional steps CI never does
+(Phase 16.25, F-M1: the `seo:postbuild` prerender step). A green CI branch/PR therefore does
+**not** prove those deploy-only steps work — they surface only when the pipeline runs on merge.
+Two guards: (a) **every tool a `package.json` script invokes must be a declared devDependency**
+(a transitive dep isn't guaranteed a `node_modules/.bin` symlink — this is how `vite-node: not
+found` (exit 127) slipped past CI); (b) if a deploy-only step is worth gating, also exercise it
+in CI, otherwise expect discovery at deploy time and read the deploy build log, not just CI.
+
+## Pin a CI tool's IMPLICIT deps; and `terraform validate` ≠ `plan` (Phase 16.30)
+Two more "green locally / passes validate, red in CI/pipeline" traps (F-N1, F-N2):
+- **pip-installed CI tools can crash on a module the laptop happens to have.** Semgrep passed
+  locally but died in `<prefix>-ci-dev` with `ModuleNotFoundError: No module named 'pkg_resources'` —
+  its bundled `opentelemetry-instrumentation` needs `pkg_resources`, shipped in **setuptools**,
+  absent from CodeBuild's pyenv python. For any pip tool in CI, **install its implicit
+  `setuptools`/`pkg_resources` (and pin it)** rather than assuming the runner has it. Same class as
+  the node "declared devDependency" guard above — don't rely on the environment's ambient packages.
+- **`terraform validate` does NOT enforce provider value constraints** (length/enum/regex) — only
+  `plan`/`apply` do. A ~330-char `aws_codebuild_project.description` (cap 255) passed `tf validate`
+  **and** `<prefix>-ci-dev`, then failed `terraform plan` in `<prefix>-infra-pipeline-dev`. So a green CI branch
+  does not prove infra applies; the infra **pipeline's plan** is the real gate (reinforces "know
+  your pipeline's real semantics"). Read the plan output, not just validate.
+- **First-time security/quality gates are a rollout, not a switch** (F-N3): fix what actually ships
+  (prod-dep highs), **baseline** pre-existing debt (e.g. `.checkov.baseline`, gate only NEW), and
+  **scope** the gate to the real attack surface (SCA `--omit=dev` so unfixable dev-tool transitive
+  advisories don't permanently block). Keep DAST advisory (non-blocking) so findings inform.
+
+## Ad-hoc CodeBuild runs pull the DEFAULT branch unless you pass `--source-version`
+A standalone `aws codebuild start-build` (e.g. the e2e project `<prefix>-web-e2e-dev`, which is **not**
+fronted by a pipeline) uses the project's configured `sourceVersion`. That field is **`null`**, so
+a default run checks out the repo's **default branch — `main`** — for the *test code*, even though
+the deploy pipelines (and all feature work) track **`develop`**. Net effect (a real 16.38d time
+sink): a fix merged to `develop` deployed fine, but a plain e2e run kept failing because it ran
+**`main`'s** older specs/baselines against dev. Rules:
+- For any ad-hoc build, pass `--source-version refs/heads/<branch>` explicitly (here almost always
+  `refs/heads/develop`), and confirm the build's `resolvedSourceVersion` in the log header.
+- Know each project's default: pipeline-driven builds get the branch from the pipeline source;
+  standalone projects fall back to the repo default (`main`) when `sourceVersion` is empty.
+- The durable fix is to pin the standalone project's `source_version = "refs/heads/develop"` in
+  Terraform (or gate e2e behind the pipeline) so a default run can't silently test the wrong ref.
+
+## CodeBuild `commands:` run under `dash`, not bash
+Buildspec `phases.*.commands` execute in `/bin/sh` (dash on the standard images), so bash-isms
+silently break or no-op: `set -o pipefail`, arrays, `[[ … ]]`, `function` keyword, process
+substitution (real 16.22 sink: a `pipefail`-based cross-platform gate). For anything beyond
+trivial linear commands, put the logic in a **checked-in `bash` script** (`e2e/ci/*.sh` with a
+`#!/usr/bin/env bash` shebang) and invoke it explicitly (`bash e2e/ci/run.sh`) — don't inline
+multi-step bash in the buildspec.
+
+## Reconcile out-of-band changes in the SAME session
+A surgical/console/CLI fix to live infra (a CloudFront function, a WAF limit, an API
+redeploy) is **not done** until it is mirrored into Terraform **and** adopted into state
+(`import {}` block or `terraform import`) so the next apply doesn't revert it or collide
+("already exists"). Never leave "reconcile the drift later" — that is exactly how a plan
+becomes an un-appliable wall of drift. Shared-module behavior flags must default to the
+**conservative/opt-in** value so a fix for one consumer doesn't silently fan out to all of
+them (the SPA-routing flag defaulting `true` made 8 buckets fight over one function name).
+
+## Monorepo path-filtering: filter at the TRIGGER, not in the build
+In a single-repo / multi-pipeline setup, a push must only build/deploy the package(s) whose
+files changed — a docs/rules/skills-only push must trigger **nothing**. Get the layer right:
+- **CodePipeline V2 `trigger { filePaths }` is `CodeStarSourceConnection`-only** (GitHub/
+  Bitbucket/GitLab). It does **not** work for **CodeCommit**. Don't write a CodeCommit pipeline
+  that "relies on" V2 file-path triggers — they're silently ignored.
+- For **CodeCommit**, filter at the trigger with a **dispatcher Lambda**: one EventBridge rule
+  on repo pushes → Lambda diffs the pushed range (`codecommit:GetDifferences`, using the
+  event's `oldCommitId`/`commitId`) → `StartPipelineExecution` only on pipelines whose paths
+  matched. Fail-safe to "start all" if the diff is indeterminate; start nothing on a no-op.
+  (Reference build: `<prefix>-pipeline-dispatcher-dev` + each pipeline module's `create_source_trigger=false`.)
+- A **buildspec `exit 0` guard is not sufficient**: it can skip a web/api build, but an
+  early-success Build still advances the **infra** pipeline to its Manual Approval + Apply. Only
+  trigger-level filtering keeps an irrelevant push from raising the approval gate. Verify a
+  claim like "docs changes don't deploy" against the **actual** trigger, not the intent.
+
+## Known gaps to close (do not silently rely on them)
+- Every contributor/agent must be able to push to the remote the pipeline watches, or the
+  trigger is unreliable. Example from the reference build: developers push **directly to
+  CodeCommit** (no GitHub mirror), which needs the `git-remote-codecommit` helper on `PATH` and
+  `AWS_PROFILE=<account-id>`.
+- **(RESOLVED)** DB migrations now ride the pipeline (principle: schema must be in place before
+  the code that reads it, applied by the pipeline, not by hand). Example topology (reference
+  build): `<prefix>-api-pipeline-dev` has a **Migrate stage**
+ (`Source → Migrate → Build`) backed by a **VPC-attached CodeBuild** (`<prefix>-migrate-dev`, on a
+ dedicated `migrate-sg` → Aurora) that runs the real `knex migrate:latest` before the Lambda
+ deploy — so schema is always in place before the code that reads it (closes F-S2/F-T2). The RDS
+ Data-API bridge (`scripts/apply-via-data-api.ts`) is now only a break-glass/verify helper, not the
+ deploy path. Two gotchas when extending this: (a) a new in-VPC AWS-API client needs **both** 443
+ egress **and** interface-endpoint-SG **ingress** from its SG (Private-DNS coupling, F-Q2); (b) the
+ migrate build connects **directly to Aurora** with the master secret (RDS Proxy `iam_auth_required`
+ rejects knex's password handshake). Still to do: wire the Migrate stage into staging/prod api
+ pipelines at parity when those are built (`enable_migrate_security_group` + `migrate_project_name`
+ are ready to reuse).
+- **(RESOLVED)** Pipelines used to fire on **any** `develop` push (each owned an EventBridge
+  rule), so docs/rules pushes rebuilt web+api and parked an infra approval. Now the central
+  dispatcher Lambda (reference build: `<prefix>-pipeline-dispatcher-<env>`) path-filters at the trigger (see the monorepo section
+  above). If you ever see an unexpected build/approval from an irrelevant push, check the
+  dispatcher's CloudWatch logs + its `PIPELINE_ROUTES` globs before approving anything.
+- Still: know the pipeline's `execution_mode` (QUEUED here); if a stale/superseded approval is
+  parked, **reject** its token rather than approving an old plan.

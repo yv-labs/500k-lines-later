@@ -1,0 +1,126 @@
+---
+description: React component patterns, state management, and frontend architecture conventions
+globs: "**/*.tsx"
+alwaysApply: false
+---
+
+# React Frontend Conventions
+
+## Component Architecture
+- Functional components only. No class components.
+- One component per file. Co-locate styles, tests, and types with the component.
+- Use `React.lazy()` + `Suspense` for route-level code splitting.
+- Keep components under 150 lines. Extract logic into custom hooks.
+
+## File Organization (<project>-web)
+```
+src/
+  components/
+    ui/            # shadcn/ui primitives (Button, Input, Dialog, etc.)
+    layout/        # Shell, Sidebar, Navbar, Footer
+    landing/       # Landing page sections
+    orders/        # Order-management surface components
+    catalog/       # Catalog surface components
+    admin/         # Admin dashboard components
+    shared/        # Cross-surface components (LoadingSpinner, ErrorBoundary, etc.)
+  hooks/           # Custom hooks (useAuth, useOrders, useCatalog, etc.)
+  lib/             # Utilities (api-client, validators, formatters)
+  pages/           # Route-level page components
+  types/           # TypeScript type definitions
+  stores/          # Zustand stores
+  styles/          # Global CSS, Tailwind extensions
+```
+
+## State Management
+- **Server state**: TanStack Query (`useQuery`, `useMutation`). No manual fetch + useState.
+- **Client state**: Zustand stores in `src/stores/`. One store per domain (auth, ui, orders).
+- **Form state**: React Hook Form + Zod schemas. Define schemas in `src/lib/validators/`.
+- **URL state**: React Router search params for filters, pagination, sorting.
+- Never duplicate server state in client stores.
+
+## Data Fetching Pattern
+
+```typescript
+// Define query in hooks/useOrders.ts
+export function useOrders(filters: OrderFilters) {
+  return useQuery({
+    queryKey: ['orders', filters],
+    queryFn: () => apiClient.get<OrderListResponse>('/orders', { params: filters }),
+  });
+}
+```
+
+### Query-key completeness — EVERY server-affecting param must be in the key
+A `queryKey` is the cache identity. If a filter/param that changes the server response is
+**absent from the key**, TanStack Query serves the previous cached page and the UI silently
+never refetches — it looks like "the filter/search does nothing". Prefer spreading the whole
+filters object into the key (`['orders', filters]`) so a new field can't be forgotten. If you
+hand-build a key (e.g. a `queryKeys.ts` factory that `JSON.stringify`s a curated subset), it is
+a latent bug magnet: it MUST include every param the `queryFn` forwards to the API. Real bug
+here — a public catalog-listings key omitted `q`/`sort`/a range filter, so typing a search,
+changing sort, or changing the range returned the last result set. When adding a new filter,
+update the query-key builder in the same edit as the `queryFn`.
+
+## Performance
+- Memoize expensive computations with `useMemo`, callbacks with `useCallback` — only when needed (measured, not speculative).
+- Use `React.memo` only for components that receive complex objects as props and render frequently.
+- Lazy-load 3D scenes (Three.js/Spline) and animation-heavy sections.
+- Images: use WebP with `loading="lazy"` and `srcSet` for responsive sizes.
+
+## Accessibility
+- All interactive elements must be keyboard-accessible.
+- Use Radix primitives (via shadcn/ui) — they handle ARIA attributes automatically.
+- Color contrast must meet WCAG 2.1 AA (4.5:1 for text, 3:1 for large text).
+- Form inputs must have associated labels (visible or `aria-label`).
+- For the concrete axe-core violation→fix patterns that recur here (`aria-progressbar-name`,
+  `button-name` on placeholder-only `SelectTrigger`s, `listitem`/`aria-required-children` from
+  `role="feed"`, `dlitem`, `color-contrast` on `amber-600` / `muted-foreground/80`) and the
+  "axe passes vacuously on a blank page" trap, follow `accessibility-standards.mdc`.
+
+## Routing & scroll restoration
+- A client-router SPA does **not** reset scroll on navigation — without a global handler, a new
+  route renders at the *previous* page's scroll offset, so pages appear to "open in the middle",
+  a long page's footer looks unreachable, and CTAs land mid-page. Mount ONE global
+  `ScrollToTop` (inside the Router) that `window.scrollTo(0, 0)` on **pathname** change.
+  - Key on `pathname` only — **not** the search string — so in-page filter/tab/pagination
+    changes that live in the querystring don't yank the user to the top.
+  - Respect in-page anchor deep links: if `location.hash` is present, leave scrolling to the
+    browser's native anchor handling.
+  - Use `useLayoutEffect` so the reset happens before paint (no flash at the old offset). This
+    also stabilises scroll-triggered animation libraries (GSAP `ScrollTrigger`) whose start/end
+    positions are miscalculated when the page mounts at a stale offset.
+
+### Do NOT hijack native scrolling (GSAP `ScrollTrigger.normalizeScroll`) — it cuts off the footer
+`ScrollTrigger.normalizeScroll(true)` (or any scroll-jacking / smooth-scroll library) replaces the
+browser's native wheel/touch scroll with a JS-driven scroll clamped to a **cached max-scroll**.
+When the page height grows *after* that cache is taken — late-loading media/images, dynamically
+appended sections, `AnimatePresence` route transitions — real wheel/touch input can no longer
+reach the new bottom, so the **footer and trailing sections silently get cut off** (real bug here:
+three long marketing pages). Only enable scroll normalization if you genuinely need it (e.g. a `pin`ned
+scroll-jacked section) AND you call `ScrollTrigger.refresh()` after every height change; otherwise
+leave native scroll alone. Plain reveal/`scrub` animations do **not** need it. `ScrollTrigger.config({ ignoreMobileResize: true })` handles the mobile-address-bar jitter that
+normalizeScroll is often (wrongly) reached for.
+
+### Verify scroll/footer reachability with REAL input, not programmatic `scrollTo`
+`window.scrollTo` / `scrollBy` (and untrusted synthetic `WheelEvent`s) **bypass** scroll-jacking
+observers, so they will happily reach the footer even when a real user's wheel/touch is clamped —
+a false "it works" that hides exactly this class of bug. When verifying a "can't scroll to the
+bottom / footer missing" report: measure `document.documentElement.scrollHeight - innerHeight`
+vs. what real input can reach, check for a scroll normalizer/smooth-scroll lib, and test at a
+**realistic short viewport** (~800px) with real wheel/touch — not just a tall automation viewport
+with programmatic scroll. If programmatic scroll reaches the footer but the user can't, suspect
+scroll hijacking, not CSS height/overflow.
+
+## Customer-facing copy must match the business model's hard constraints
+Public/customer copy is part of the product contract, not decoration. Whatever invariants
+`project-context.mdc` declares (data-isolation rules, what the product does and does *not* do,
+regulatory disclaimers), marketing copy must never contradict them — a hero subtitle promising a
+capability the product deliberately withholds is a product bug, not a wording nit. Real case: a
+value-prop blurb implied users could do directly what the product's isolation model routes
+through the platform. Audit hero subtitles, CTA cards, and value-prop blurbs against the
+business rules whenever you edit landing pages.
+
+## Locale & formatting
+- Currency: always format via the shared formatter, `Intl.NumberFormat(<locale>, { style: 'currency', currency: <currency> })` — never hand-build currency strings.
+- Phone: validate and normalize with libphonenumber using `<default-country>` as the default region; accept international numbers.
+- Dates: use one project-wide display format derived from `<locale>` (via a shared date formatter), never ad-hoc per component.

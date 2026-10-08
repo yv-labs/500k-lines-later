@@ -1,0 +1,18 @@
+{
+  "name": "500k-lines-later",
+  "owner": { "name": "YV Labs by Vidh Yasa", "url": "https://github.com/yv-labs" },
+  "metadata": {
+    "description": "500k lines later: rules and skills with receipts — every line traces to a real incident from a ~427K-line AI-IDE-driven build.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "500k-lines-later",
+      "source": "./",
+      "description": "23 rules (10 always-on / 10 glob-scoped / 3 on-demand) + 6 skills (5 project / 1 user-level).",
+      "version": "0.1.0",
+      "category": "productivity",
+      "keywords": ["rules", "skills", "aws", "serverless", "ci-cd", "debugging", "retrospective"]
+    }
+  ]
+}

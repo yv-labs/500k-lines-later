@@ -1,0 +1,42 @@
+---
+description: Lint gates from day one + Lambda logging policy (no stray console.log)
+globs: "**/*.ts,**/*.tsx,**/buildspec*.yml,**/eslint.config.*"
+alwaysApply: false
+---
+
+# Static Analysis & Logging
+
+## Lint every package, gate in CI from day one
+The backend ran for months with **no ESLint config** — `tsc` was its only static gate, so
+security-critical code (the role-based response-filtering module) was never linted, despite `git-workflow.mdc` requiring
+"eslint on changed files". Every package (web **and** api/infra) must have:
+
+- an ESLint **flat config** matching the installed ESLint major, with `typescript-eslint`
+  (use the fast **non-type-checked** `recommended` preset for Node packages so it can't hang
+  like a full repo `tsc` — see `cloud-first-verification.mdc`),
+- `lint` / `lint:fix` scripts, and
+- a CI **gate** in the buildspec `pre_build` (`npm run lint` before `typecheck`) at an effective
+  `--max-warnings 0`.
+
+## Triage warnings — never blanket-silence
+When a rule fires en masse, classify each cluster; do **not** disable the rule globally:
+
+- **Config over-reach** (e.g. `no-console` in CLI `scripts/**`, or `console`/`any` in tests) →
+  scope it off for the right `files`, not everywhere.
+- **Genuine bug** (dead vars, dropped error `cause`) → fix the code.
+- **Legitimate-but-noisy** → adopt a principled rule *option*, not a blanket `off`.
+
+Burn the backlog to **0 warnings** before adding more features; a perpetual warning pile trains
+everyone to ignore red. Note: `eslint --fix` removing unused `eslint-disable` directives leaves
+whitespace-only orphan lines — clean them.
+
+## Logging in Lambda / Node backends
+`console.log` is the classic stray-debug smell. Policy:
+
+- Forbid bare `console.log`: `'no-console': ['error', { allow: ['warn', 'error', 'info'] }]`.
+- Emit **structured JSON at an explicit level**. Prefer **AWS Lambda Powertools `Logger`** (or
+  Lambda native JSON logging) for correlation IDs, cold-start, and service fields — instantiate
+  it **outside** the handler. Adopt it early so you don't accumulate ad-hoc `console` +
+  `eslint-disable` sprawl (we hand-annotated ~108 console calls before cleaning them up).
+- Encode the policy in the lint rule; don't hand-annotate every operational log with
+  `eslint-disable no-console`.

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "Discussion: how do you handle…"
+    url: https://github.com/yv-labs/500k-lines-later/discussions
+    about: "Questions, 'does anyone use this with X', war stories, and ideas that aren't a specific finding yet."

@@ -1,0 +1,55 @@
+name: validate
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install pyyaml
+        run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml
+      - name: structure, companions, scrub
+        run: bash scripts/validate.sh
+      - name: install script smoke test (every tool target)
+        run: |
+          set -e
+          for mode in cursor claude codex agents-md copilot gemini windsurf devin; do
+            t="$(mktemp -d)"; bash scripts/install.sh --$mode "$t" > /dev/null
+            echo "ok: --$mode"
+          done
+          t="$(mktemp -d)"; bash scripts/install.sh --pack starter --cursor "$t" > /dev/null
+          test "$(ls "$t/.cursor/rules" | wc -l)" -eq 5 && test -f "$t/.cursor/rules/project-context.mdc"
+          echo "ok: --pack starter (5 rules, template renamed)"
+          t="$(mktemp -d)"; bash scripts/install.sh --codex "$t" --full-rules > /dev/null
+          test "$(ls "$t/.agents/skills" | wc -l)" -eq 18                       # 5 skills + 13 rules-as-skills
+          test -z "$(find "$t/.agents/skills" -name companion-rules)"           # companions stripped
+          grep -q '](.agents/skills/aws-deploy-and-verify/)' "$t/AGENTS.md"      # links rewritten to installed path
+          grep -q '^## Full always-on rules' "$t/AGENTS.md"                      # --full-rules appended
+          python3 - "$t" <<'PY'
+          import sys,glob,re,yaml
+          for f in glob.glob(sys.argv[1]+'/.agents/skills/*/SKILL.md'):
+              d=yaml.safe_load(re.match(r'---\n(.*?)\n---\n',open(f).read(),re.S).group(1))
+              assert d['name']==f.split('/')[-2] and d['description'], f
+          PY
+          echo "ok: --codex (18 skills, rules-as-skills frontmatter valid, links rewritten, full-rules)"
+          t="$(mktemp -d)"; bash scripts/install.sh --claude "$t" --full-rules > /dev/null
+          test "$(ls "$t/.claude/skills" | wc -l)" -eq 8                        # 5 skills + 3 on-demand rules-as-skills
+          test "$(ls "$t/.claude/rules" | wc -l)" -eq 20                        # 10 paths-scoped + 10 always-on (--full-rules)
+          test "$(grep -l '^paths: "' "$t"/.claude/rules/*.md | wc -l)" -eq 10  # exactly the scoped ones carry paths:
+          test -f "$t/.claude/rules/project-context.md"                        # template installed under its real name
+          test "$(head -1 "$t/CLAUDE.md")" = "@AGENTS.md"                      # import, not a sentence
+          grep -q '](.claude/skills/aws-deploy-and-verify/)' "$t/AGENTS.md"
+          test -z "$(find "$t/.claude/skills" -name companion-rules)"
+          python3 - "$t" <<'PY'
+          import sys,glob,re,yaml
+          for f in glob.glob(sys.argv[1]+'/.claude/rules/*.md'):
+              m=re.match(r'---\n(.*?)\n---\n',open(f).read(),re.S)
+              if m:
+                  d=yaml.safe_load(m.group(1)); assert list(d)==['paths'] and isinstance(d['paths'],str) and d['paths'], f
+          for f in glob.glob(sys.argv[1]+'/.claude/skills/*/SKILL.md'):
+              d=yaml.safe_load(re.match(r'---\n(.*?)\n---\n',open(f).read(),re.S).group(1))
+              assert d['name']==f.split('/')[-2] and d['description'], f
+          PY
+          echo "ok: --claude (8 skills, 10 paths: rules + 10 full-rules, @AGENTS.md import, frontmatter valid)"

@@ -1,0 +1,98 @@
+---
+description: Git workflow, branching strategy, and commit conventions
+alwaysApply: true
+---
+
+# Git & Workflow Conventions
+
+## Branch Strategy — single-track, two long-lived branches (dev + prod only)
+
+There are exactly **two** long-lived branches. Keep it this way until scale forces otherwise.
+
+- **`develop`** — the integration + **DEV deploy** branch. Any push/merge to `develop`
+  triggers the dev pipelines (reference build: `<prefix>-web/api/infra-pipeline-dev`) and deploys to the dev
+  environment. This is where day-to-day work is verified.
+- **`main`** — the **PRODUCTION** branch (protected). Merging `develop → main` deploys to
+  prod **through a manual approval gate** (exactly one human approval before prod). Never
+  push feature work straight to `main`.
+
+### Feature branches — ONE AT A TIME
+- `feature/<task-id>-<short-desc>` — cut from `develop`, merged back into `develop`.
+- We build **one phase/task at a time, sequentially**. At most **one** feature branch exists
+  at any moment. **Do NOT create multiple concurrent feature branches or multiple PRs** unless
+  the user explicitly asks for it.
+- `fix/<desc>` and `infra/<desc>` follow the same single-branch discipline (branch from
+  `develop`, merge to `develop`).
+
+### Promotion flow
+`feature → develop` (auto-deploy **dev**) `→ main` (approval-gated **prod**). Only **dev** and
+**prod** exist today. Additional pre-prod tiers (e.g. `staging`) are deferred until scale
+warrants them; when added, extend the chain (`develop → staging → prod`) rather than spawning
+more long-lived branches.
+
+### Escape hatch — be creative, but confirm first
+This single-track flow is the default, not a cage. If a situation genuinely needs a different
+approach (a hotfix branched off `main`, parallel feature branches, several PRs, bypassing the
+prod gate, force-resetting a branch, etc.), **pause and ask the user for explicit confirmation**,
+explaining the why — do not silently deviate.
+
+### Repo location (hard requirement)
+Do all git work in the single canonical clone **`~/dev/<repo>`** — one clone, on
+a normal local disk path (never inside a cloud-synced folder such as iCloud/Dropbox/OneDrive,
+which corrupts `.git` and hangs/partially fails git ops). Don't spin up additional clones; extra
+clones silently diverge. The source of truth is the remote's `develop` (reference build:
+CodeCommit), not any local clone — detail in `local-environment-hygiene.mdc`.
+
+## Commit Messages
+- Format: `<type>(<scope>): <description>`
+- Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `infra`
+- Scope: `web`, `api`, `terraform`, `db`, `ci`
+- Examples:
+  - `feat(api): add customer registration handler`
+  - `infra(terraform): create cognito user pool module`
+  - `fix(web): correct currency formatting`
+
+## What NOT to Commit
+- `.env` files, `*.pem`, credentials, API keys, secrets.
+- `node_modules/`, `dist/`, `.terraform/`, `*.tfstate`, `*.tfstate.backup`.
+- OS files: `.DS_Store`, `Thumbs.db`.
+- IDE files not in `.cursor/rules/`.
+
+## Before Every Commit
+Verification is **cloud-only** (see `cloud-first-verification.mdc`). Do **not** run `eslint`,
+`vitest`, or `tsc` locally as a gate — they run in CI (reference build: `<prefix>-ci-<env>`
+CodeBuild) when you push the branch / open the PR.
+1. `terraform fmt` for `.tf` changes (pure formatting — the only sanctioned local check).
+2. Push the feature branch to the remote your pipeline watches; the push triggers CI (lint +
+ typecheck + tests + build + `terraform validate`). Read the CI log for pass/fail.
+3. Fix any CI failure on the branch and re-push — never merge a red branch into `develop`
+ (and never promote a red `develop` into `main`).
+4. **The CI pipeline is the authoritative gate** for lint, typecheck, tests, and `terraform validate`.
+
+## Pushing to the remote — one remote of record
+Push to the remote your pipeline watches — GitHub, GitLab, and CodeCommit are all fine. The rule
+is that the **pipeline**, not your laptop, is the gate, and that there is exactly one remote of
+record (never push to a stale/unused second remote).
+
+Example from the reference build (CodeCommit; adapt to your host):
+- The remote URL is `codecommit::<region>://<account-id>@<repo>` (repo `<repo>`, region
+  `<region>`, account `<account-id>`). Auth is AWS SigV4 — no username/password, no SSH keys.
+- In a **fresh clone** the CodeCommit remote is named **`origin`**; in the older tree it was a
+  separate **`codecommit`** remote (with `origin` pointing at an unused GitHub URL). Check
+  `git remote -v` and push to whichever name resolves to the real remote. Pushing to the
+  unused one fails with `could not read Username` — that means you're in the old tree.
+- Command: `AWS_PROFILE=<account-id> git push -u <remote> <branch>`.
+- The `codecommit::` scheme needs the `git-remote-codecommit` helper on `PATH`
+  (`pip install --user git-remote-codecommit`, symlinked into `/usr/local/bin`). If a push errors
+  with `git-remote-codecommit not found`, re-create that symlink — don't fall back to a different
+  remote.
+- Principle: use a git version new enough for the hooks/trailers your tooling injects. Here the
+  `git` on `PATH` was 2.22 and rejected an injected trailer (`error: unknown option 'trailer'`),
+  so commits used `/usr/bin/git` (2.50+).
+
+The remote is also the **pipeline source** (reference build: CodePipeline triggers off it). See
+`cicd-first.mdc`.
+
+## Implementation Plan Tracking
+- After completing a task, update the Implementation Log in `docs/IMPLEMENTATION_PLAN.md` with: files created/modified, key decisions, and the date.
+- Reference the task ID in the commit message scope (e.g., `feat(api/3.1): add Lambda shared DB layer`).

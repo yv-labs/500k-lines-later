@@ -1,0 +1,104 @@
+---
+description: Testing strategy and code quality standards
+globs: "**/*.test.ts,**/*.test.tsx,**/*.spec.ts,**/*.spec.tsx"
+alwaysApply: false
+---
+
+# Testing & Quality
+
+## Testing Stack
+- **Unit / component tests**: Vitest + React Testing Library. Run locally and in CodeBuild.
+- **Integration / contract / E2E tests**: run against the **live AWS dev environment**
+  (CloudFront + Cognito + API Gateway + Aurora + DynamoDB), via CodeBuild — NOT a local
+  docker stack. Local emulation does not match production topology (see
+  `cloud-first-verification.mdc` and your project's retrospective).
+- **E2E**: Playwright targets the deployed dev URL (`E2E_BASE_URL`); no local web server.
+
+## Test data & secrets
+- Use a **shared, RFC-4122-valid id factory** for synthetic IDs. Hand-rolled UUID-shaped
+  strings pass Postgres but fail every `z.string().uuid()` schema (F-D5) — never invent
+  UUIDs inline.
+- **Persist** synthetic personas/data for reuse; store test credentials in **Secrets
+  Manager**, not in code, so human testers can reuse them (F-H3).
+- Guard factories so they cannot run against prod.
+
+## CI gates
+- Type-check and coverage thresholds run in CodeBuild and are wired **before** feature work.
+- Don't lower a coverage gate just to turn a build green — write the missing test or scope
+  the gate deliberately and record why (F-B7).
+
+## Load / stress / spike / soak testing (Phase 16.26 — F-Y3/F-Y4)
+Backend load runs execute against **live dev** via the standalone load-test CodeBuild project
+(reference build: `<prefix>-loadtest-dev`; k6 harness in `loadtest/**`; not a pipeline gate) —
+never local load generation. Interpreting results correctly is the hard part:
+- **A non-zero failure rate under `spike`/`stress` is EXPECTED and must be *attributed*, not
+  assumed to be a bug.** Cross-check CloudWatch for the run window: if failures line up with
+  **Aurora `ACUUtilization` 100% at the ACU cap**, **Lambda `Throttles` > 0 with `Errors` == 0**,
+  or API-GW 429s, they are legitimate **capacity ceilings** (tuning findings), not defects. Only
+  application faults (5xx with `Errors` > 0, duplicate-key, exhausted-sequence) are bugs.
+- **`baseline` and `soak` run below the knee — they MUST be ~0.00% failed to call a path healthy.**
+  A regression is proven eliminated only when the same scenario that failed pre-fix is 0% at
+  baseline (not merely "better under stress"). Soak also proves *no drift/leak*: flat latency, 0
+  DLQ growth, no upward creep across the window.
+- **A CloudWatch "no data" row is a capture bug, not a healthy zero.** Verify each metric's
+  **dimension** (e.g. RDS Proxy needs the correct `ProxyName`/target-group; Aurora Serverless v2
+  emits at the *cluster* dimension, not instance) before trusting an empty/zero reading — a missing
+  dimension silently reads as "nothing happening."
+
+## Test File Conventions
+- Co-locate test files: `ComponentName.test.tsx` next to `ComponentName.tsx`.
+- Lambda tests: `handler.test.ts` next to `handler.ts` in each function directory.
+- Name test files with `.test.ts` suffix (not `.spec.ts`).
+
+## What To Test
+- Business logic: verification pipelines, RBAC checks, role-scoped data anonymization, notification-targeting logic.
+- API handlers: request validation, authorization, response format, error cases.
+- React hooks: custom hooks with `renderHook()`.
+- Components: user interactions, conditional rendering based on role, form validation feedback.
+
+## What NOT To Test
+- Trivial getters/setters.
+- Third-party library internals (shadcn/ui renders correctly).
+- Implementation details (don't test internal state, test behavior).
+
+## Test Patterns
+
+```typescript
+describe('getCustomers', () => {
+  it('redacts contact fields for non-admin roles', async () => {
+    const result = await getCustomers(memberUserEvent);
+    expect(result.body).not.toContain('email');
+    expect(result.body).not.toContain('phone');
+  });
+
+  it('returns full data for admin users', async () => {
+    const result = await getCustomers(adminUserEvent);
+    expect(JSON.parse(result.body).data[0]).toHaveProperty('email');
+  });
+});
+```
+
+## Mocking AWS SDK clients in unit tests (F-Z1)
+When unit-testing a module that constructs an AWS SDK v3 client (`new XClient()` then
+`client.send(cmd)`), **mirror the repo's proven mock pattern** — a `vi.hoisted` handle + a real
+**class** whose `send` IS the mock:
+```typescript
+const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn() }));
+vi.mock('@aws-sdk/client-x', () => ({
+  XClient: class FakeXClient { send = sendMock; destroy = vi.fn(); },
+  SomeCommand: function FakeSomeCommand(input: unknown) { (this as unknown as { input: unknown }).input = input; },
+}));
+```
+Do **NOT** use an arrow factory `XClient: vi.fn(() => ({ send: sendMock }))` — it does not reliably
+attach `send` under `new XClient()`, so `send()` returns `undefined` and the code silently falls
+into its catch/degraded path. This is nasty because tests that *expect* the degraded result still
+pass, so only the data-bearing cases go red. Also `vi.mock` is hoisted above `const` declarations,
+so non-`vi.hoisted` mock handles can hit TDZ. Since **unit-test pass/fail is only proven in
+CodeBuild** (cloud-first), copy an existing green test's mock wiring exactly (e.g.
+`shared/notifications/email.test.ts`) rather than inventing one you can't validate locally.
+
+## Code Quality
+- ESLint with `@typescript-eslint/recommended` + React hooks plugin.
+- Prettier for formatting (single quotes, trailing commas, 100 char line width).
+- No `console.log` in production code — use structured logging (`pino` or CloudWatch-compatible logger).
+- No `eslint-disable` without a comment justifying why.

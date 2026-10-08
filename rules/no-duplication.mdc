@@ -1,0 +1,39 @@
+---
+description: Prevent duplicate code and enforce DRY — ALWAYS check existing code before creating anything new
+alwaysApply: true
+---
+
+# No Duplication Policy
+
+## Before Writing ANY Code
+1. **Search first** — Before creating a file, component, hook, utility, type, Lambda function, or Terraform module, search the codebase for existing implementations. Use grep/glob for function names, type names, and file names.
+   - **Search across ALL phases, not just the current one.** A whole backend service
+     Lambda was built twice because an earlier phase's version wasn't found (F-F1). Grep
+     `<api-package>/src/functions/` for any service touching your domain before creating one.
+   - If two handlers would share orchestration logic, extract it to `src/shared/` instead of
+     copy-pasting (F-F2). Avoid parallel utilities that need re-export shims to reconcile (F-F3).
+2. **Check shared layers** — The API repo has `src/shared/` with reusable utilities (DB connection, auth middleware, response helpers, error handling, validation, notification helpers, TypeScript types). Always import from shared layers before writing inline logic.
+3. **Check `src/components/ui/`** — shadcn/ui components live here. Never recreate Button, Dialog, Input, Select, Card, Toast, etc. Extend existing variants instead.
+4. **Check `src/hooks/`** — Custom hooks exist for auth, data fetching, forms, real-time. Reuse them.
+5. **Check `src/lib/`** — Utilities for API calls, date formatting, currency formatting, validation schemas live here.
+
+## What Counts As Duplication
+- Two functions that do the same transformation
+- Two API calls to the same endpoint with slightly different wrappers
+- Two Zod schemas for the same entity
+- Two Tailwind component classes that produce the same visual output
+- Two Terraform resources with identical configuration (should be a module)
+- Inline type definitions that duplicate types from `src/types/`
+
+## How To Fix It
+- Extract to `src/lib/utils.ts`, `src/hooks/`, or `src/components/ui/`
+- For Lambda: extract to `src/shared/` layer
+- For Terraform: extract to `<terraform-modules>` and call it
+- For types: define once in `src/types/` (web) or `src/shared/types/` (api)
+
+## Minimal Code Mandate
+- Write the minimum code needed for the feature to work correctly
+- Do NOT add speculative abstractions, unused parameters, or "future-proofing" wrappers
+- Do NOT create wrapper functions that only call another function without adding logic
+- Prefer composition over inheritance; prefer hooks over HOCs
+- If a utility exists in a dependency (lodash-es, date-fns, zod), use it — don't rewrite

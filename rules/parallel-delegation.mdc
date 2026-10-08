@@ -1,0 +1,36 @@
+---
+description: Delegating work to parallel subagents safely — ground-truth evidence in, verified diffs out
+alwaysApply: true
+---
+
+# Parallel Delegation (trust nothing unverified)
+
+Subagents accelerate work but their self-reports are **not** proof. On this project, delegated
+fixes repeatedly went wrong in ways that only a diff check caught. These are guardrails for any
+time you fan work out to subagents (or any automated editor).
+
+## Give delegates GROUND-TRUTH evidence, not a paraphrased heuristic
+A subagent told "fix the amber color-contrast" reported **"no changes needed"** for pages that
+*were* failing — on a **different** rule (`button-name`, `listitem`, `muted-foreground/80`) its
+narrow heuristic never covered. Hand the delegate the **actual failing evidence**: the exact axe
+violation ids + selectors, the failing test `spec:line › title`, the CI log excerpt, the precise
+file/line. Scope its task to that evidence, not to your guess at the cause.
+
+## Verify the diff actually landed — a "done" report is a claim, not a fact
+Subagents reported success while their edits were **absent** from the files (changes did not
+persist). After any delegate returns — and before building on it or claiming done — run
+`git diff --stat` and **read the changed hunks** to confirm the intended change is really there.
+If it isn't, apply it yourself. Never chain further work on an unverified "done".
+
+## Check the delegate didn't REVERT or clobber other work
+Read the **full** `git diff`, not just the files you expected to change. A delegate (or a
+stale-file sync from the other clone — see `local-environment-hygiene.mdc`) can silently *remove*
+already-committed, verified-green work. If the diff deletes things you know shipped, treat it as a
+clobber and restore, don't commit it.
+
+## Partition writes so parallel agents don't collide
+Give each concurrent write-subagent a **disjoint** set of files and say so explicitly. The parent
+keeps ownership of coherence-critical single files (the implementation plan, shared config, the
+retrospective doc) and does the **central validation** pass. This honours `no-duplication.mdc`
+(don't let two agents fork near-identical edits) and the Definition of Done in
+`implementation-workflow.mdc` (the task isn't done until the change is verified present + green).

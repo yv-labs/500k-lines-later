@@ -1,0 +1,39 @@
+---
+description: Mandatory post-task retrospective that evolves rules and skills so the agent keeps getting smarter
+alwaysApply: true
+---
+
+# Continuous Improvement (post-task reflex)
+
+After finishing **any** task or phase — before declaring it done — run a brief retrospective
+and evolve the guidance. This is mandatory and automatic; it is how the rules/skills (and the
+agent) keep getting smarter across this project and every other one they're used in.
+
+## Calibrate depth (don't add noise)
+- **Trivial task, nothing new learned** → a quick mental check; no file changes. Say so in one line.
+- **Substantial task/phase, OR any friction signal** → capture it (steps below).
+
+**Always capture** when any of these occurred: a user correction or "no/again/revert/why",
+a rework/whack-a-mole loop, a fix that broke something else, an environment/tooling gotcha,
+a "claimed done" that wasn't, a drift/version/sync surprise, or a **new reusable pattern**.
+
+## The reflex
+1. **Reflect** (1–6 bullets): what broke or was corrected, which approach **failed vs worked**,
+   the **root cause**, what we **missed** that led there, and the durable **lesson**.
+2. **Evolve the guidance** — prefer **extending an existing** rule/skill over creating a new
+   one (honour `no-duplication.mdc`); create a new rule/skill only for a genuinely new concern.
+   Keep edits **principle-based and non-locking** — capture the lesson without banning
+   legitimate future approaches or prescribing a brittle script.
+3. **Record** the finding in the project retrospective (`docs/RETROSPECTIVE_AND_PLAYBOOK.md`
+   here) with an ID + the rule/skill it maps to.
+4. **Generalize** — if the lesson isn't project-specific, also carry it cross-project (a
+   personal skill in `~/.cursor/skills/`, or propose a Settings → User Rule).
+
+## Guardrails
+- Lightweight and proportional — this should take a moment, not derail the task.
+- No duplicate/near-identical rules; reconcile, don't fork.
+- Validate any edit (valid frontmatter, no contradiction with existing rules).
+
+## Related
+- Deep, transcript-mining version → skill `phase-retrospective`.
+- In-task loop avoidance → `systematic-debugging.mdc` + skill `debugging-with-evidence-ledger`.

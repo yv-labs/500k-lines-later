@@ -1,0 +1,77 @@
+name: "Finding → rule/skill change"
+description: "Something broke (or an agent did the wrong thing) and a rule or skill should change because of it."
+title: "[finding] "
+labels: ["finding"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every line in this repo exists because of an incident. Add yours the same way — this is the
+        single most valuable kind of contribution.
+  - type: textarea
+    id: incident
+    attributes:
+      label: What happened
+      description: Symptom as observed. Quote the error, the log line, or what the agent said.
+      placeholder: "The agent reported 'done' after a local vitest run; CI failed on a typecheck it never ran…"
+    validations:
+      required: true
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root cause(s)
+      description: If a fix moved the symptom instead of removing it, list the second cause too.
+    validations:
+      required: true
+  - type: input
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Something another person could open — CI build id, commit, transcript excerpt, screenshot link.
+  - type: dropdown
+    id: target
+    attributes:
+      label: Which rule or skill should change?
+      options:
+        - implementation-workflow
+        - no-duplication
+        - git-workflow
+        - cicd-first
+        - cloud-first-verification
+        - local-environment-hygiene
+        - systematic-debugging
+        - continuous-improvement
+        - parallel-delegation
+        - project-context (template)
+        - typescript-standards
+        - react-frontend
+        - tailwind-design-system
+        - accessibility-standards
+        - lambda-api
+        - database-schema
+        - terraform-infra
+        - testing-quality
+        - testing-standards
+        - static-analysis-and-logging
+        - aws-services
+        - performance-optimization
+        - security-compliance
+        - skill: aws-deploy-and-verify
+        - skill: aws-serverless-project-bootstrap
+        - skill: debugging-with-evidence-ledger
+        - skill: e2e-flake-triage
+        - skill: phase-retrospective
+        - skill: continuous-improvement-retrospective
+        - "none of these (explain below)"
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed wording
+      description: The principle first, the incident second. Keep it to a few lines — rules are read on every turn.
+  - type: input
+    id: tool
+    attributes:
+      label: Tool and version
+      placeholder: "Cursor 2.4 / Claude Code 2.1.280 / Codex CLI …"

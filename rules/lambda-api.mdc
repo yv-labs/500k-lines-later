@@ -1,0 +1,89 @@
+---
+description: AWS Lambda function patterns, API conventions, and backend architecture for the API package
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# Lambda & API Conventions
+
+## Runtime & Architecture
+- Node.js 22 LTS, ARM64 (Graviton2), TypeScript compiled via esbuild.
+- Function-per-domain pattern (not function-per-route). Each Lambda handles multiple related routes via internal routing.
+- REST API + event-driven functions. The function count grows with every phase — reference your TRD's function inventory (e.g. `docs/TRD.md §9`) rather than assuming a fixed count. Search `<api-package>/src/functions/` before adding a new service (a whole service was once built twice because an earlier phase's version wasn't found — F-F1).
+
+## Project Structure (<api-package>)
+
+```
+src/
+  functions/
+    auth/            # fn-auth-handler
+    profiles/        # fn-profile-handler
+    orders/          # fn-order-handler
+    ...
+  shared/
+    db/              # Knex connection, RDS Proxy config
+    middleware/       # Auth verification, RBAC, request parsing
+    errors/          # Custom error classes (AppError, ValidationError, etc.)
+    responses/       # Standardized API response helpers
+    validators/      # Zod schemas for request validation
+    notifications/   # SNS/SES/Pinpoint helpers
+    types/           # Shared TypeScript interfaces
+```
+
+## Handler Pattern
+
+```typescript
+import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { withAuth } from '@shared/middleware/auth';
+import { response } from '@shared/responses';
+
+export const handler = withAuth(async (event, context, user) => {
+  const method = event.requestContext.http.method;
+  const path = event.rawPath;
+  
+  switch (`${method} ${path}`) {
+    case 'GET /orders':
+      return getOrders(event, user);
+    case 'POST /orders':
+      return createOrder(event, user);
+    default:
+      return response.notFound();
+  }
+});
+```
+
+## RBAC Enforcement
+- Every handler MUST verify the caller's role before proceeding.
+- Use `requireRole(user, ['admin', 'operator'])` from shared middleware.
+- Data filtering must also apply role-based visibility: strip every field the caller's role is not permitted to see (owner-only fields, internal ids, other tenants' identifiers) in a shared response-filter, not per handler.
+
+## Database Access
+- Use Knex.js query builder — no raw SQL unless for full-text search.
+- Connect via RDS Proxy (connection pooling for Lambda).
+- Reuse the DB connection across warm invocations: initialize outside the handler.
+- All queries MUST use parameterized values. Never concatenate user input into SQL.
+
+## Validation
+- Validate ALL incoming request bodies with Zod schemas.
+- Return `400` with structured error details on validation failure.
+- Define schemas in `src/shared/validators/` — one file per domain.
+
+## Response Format
+
+```typescript
+{
+  "success": true,
+  "data": { ... },
+  "meta": { "page": 1, "limit": 20, "total": 142 }
+}
+
+{
+  "success": false,
+  "error": { "code": "ORDER_NOT_FOUND", "message": "Order does not exist" }
+}
+```
+
+## Cold Start Optimization
+- Keep bundles small: tree-shake with esbuild, import only what you need from AWS SDK v3 (`@aws-sdk/client-s3`, not `aws-sdk`).
+- Use Lambda Layers for shared code (db, auth, responses).
+- Initialize AWS SDK clients outside the handler function.

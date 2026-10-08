@@ -1,0 +1,59 @@
+---
+description: Concrete WCAG 2 AA / axe-core violation→fix patterns for React UI, applied proactively
+globs: "**/*.tsx"
+alwaysApply: false
+---
+
+# Accessibility Standards (axe-core / WCAG 2 AA)
+
+The E2E a11y shard runs **axe-core (WCAG 2 A/AA)** against the deployed dev pages. Radix/shadcn
+primitives handle most ARIA automatically, but a recurring set of *serious* violations kept
+surfacing on custom viz and on primitives used with placeholder-only content. Fix these at author
+time on **every** new UI surface (admin dashboards, the authenticated portals, public pages, forms) —
+don't wait for the crawl to flag them.
+
+## The latent-a11y trap (why these surfaced late)
+axe on a page that renders **blank / errored / empty-state** passes **vacuously** — there are no
+elements to violate. In 16.38d, once the API-Gateway fix let authed admin/portal pages finally
+render **real data**, the 16.21 crawl exercised surfaces it never had and surfaced **13 serious
+violations at once**. Lesson: a "green" a11y run against an unauthenticated/empty page is a **false
+pass**. Assert a11y against **fully-rendered, authenticated, data-populated** pages, and treat new
+data-bearing components as unaudited until the crawl has actually reached them.
+
+## Recurring violations → fixes (apply proactively)
+
+- **`aria-progressbar-name`** — every element with `role="progressbar"` needs an accessible name.
+  Inline "breakdown bar" divs (`aria-valuenow/min/max` but no name) fail. Add an `aria-label`
+  describing the datum:
+  - ❌ `<div role="progressbar" aria-valuenow={n} aria-valuemin={0} aria-valuemax={max} />`
+  - ✅ `<div role="progressbar" aria-label={`${label}: ${value}`} aria-valuenow={n} … />`
+  - When a shared bar component has no label in scope, add a required `label` prop and pass it from
+    every call site (coerce optional lookups: `label={LABELS[k] ?? k}` to satisfy `string`).
+
+- **`button-name`** — a button with no text needs an accessible name. shadcn `SelectTrigger` whose
+  `SelectValue` shows only a **placeholder** renders a nameless button; icon-only buttons too.
+  - ✅ `<SelectTrigger aria-label="Document decision">…</SelectTrigger>`; icon buttons get
+    `aria-label` (and decorative icons `aria-hidden`).
+
+- **`listitem` / `aria-required-children`** — `<li>` must sit in a `<ul>`/`<ol>` (or `role=list`).
+  Putting `role="feed"` on an `<ol>` changes its required children to `role="article"`, so the
+  `<li>`s become invalid children and BOTH rules fail. Don't bolt landmark/widget roles onto
+  native list elements:
+  - ❌ `<ol role="feed"><li>…</li></ol>` → ✅ `<ol><li>…</li></ol>` (drop `role="feed"`).
+
+- **`dlitem`** — `<dt>`/`<dd>` MUST be **direct children of a `<dl>`**. A `<div>` wrapping a
+  `<dt>`/`<dd>` pair breaks it:
+  - ❌ `<div><dt/><dd/></div>` → ✅ `<dl><dt/><dd/></dl>`.
+
+- **`color-contrast`** (needs ≥ 4.5:1 for normal text, ≥ 3:1 for large text, in **both** themes):
+  - Light-mode `text-amber-600` fails on light backgrounds → use `text-amber-700`
+    (`text-amber-700 dark:text-amber-300`). The same caution applies to other `-600` accent text.
+  - Don't dim an already-muted token with an opacity modifier: `text-muted-foreground/80` drops
+    below AA → use full `text-muted-foreground`.
+  - Verify contrast in **light AND dark** — a token that passes in one mode can fail in the other.
+
+## Baseline expectations (see also `react-frontend.mdc` → Accessibility)
+- All interactive elements keyboard-accessible; prefer Radix/shadcn primitives (they wire ARIA).
+- Every form input has a visible label or `aria-label`.
+- Custom visualizations built from `div`s (bars, charts, gauges) need explicit names/roles — the
+  primitive layer won't add them for you.

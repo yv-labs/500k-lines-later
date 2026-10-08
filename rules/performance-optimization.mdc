@@ -1,0 +1,68 @@
+---
+description: "Performance optimization guidelines for frontend, Lambda, and database layers. Use when a page, Lambda or query is slow, when setting bundle/latency/cost budgets, when reading Lighthouse or CloudWatch numbers, or before adding caching, indexes, code-splitting or provisioned concurrency."
+alwaysApply: false
+---
+
+# Performance Optimization
+
+## Frontend (Web/Mobile)
+- Target: Lighthouse score 90+ (Performance, Accessibility, Best Practices, SEO).
+- First Contentful Paint < 1.5s, Largest Contentful Paint < 2.5s.
+- Total JS bundle < 200KB gzipped (excluding lazy-loaded chunks).
+- Route-level code splitting via `React.lazy()`. Each route loads only its own chunk.
+- **Lazy-load the auth SDK (Amplify/Cognito) off the public path.** Anonymous landing-page
+  visitors must not download `aws-amplify`. Use a single dynamic loader (`import()` behind a
+  memoised promise) and only bootstrap auth when a session hint exists. Split `aws-rum-web`
+  into its own third-party chunk so monitoring never drags in the auth SDK. (reference build, 16.5.1:
+  initial JS 254→192 KB gz this way.)
+- Preload critical assets: fonts, hero images, above-the-fold CSS.
+- **Static hero shell for instant FCP/LCP on a CSR SPA.** Paint the above-the-fold
+  headline/CTA as CSS-only HTML in `index.html` (no JS), make fonts non-render-blocking
+  (`preload`+`onload` swap), `preload` the hero poster (`fetchpriority=high`), then fade the
+  shell out in `useLayoutEffect` once React commits. This wins FCP/CLS/perceived-perf without
+  SSR. Reach for SSR/prerender only if the FIELD SLO (below) is actually missed.
+- 3D scenes: load asynchronously, show skeleton/Lottie placeholder during load.
+- Tree-shake: import specific functions (`import { format } from 'date-fns'` not `import * as dateFns`).
+
+## Web Performance Gating — FIELD is the SLO, LAB is a regression detector
+Hard lesson from <Project> Phase 16.5.1 (don't relearn it):
+- **Gate Core Web Vitals on FIELD data (CloudWatch RUM p75), not Lighthouse lab.** Lighthouse
+  default mobile emulation throttles CPU 4× + slow-4G; on a client-rendered SPA the lab LCP
+  element is the React-hydrated `<h1>` that paints after boot, so lab LCP is structurally
+  ~7–8 s even when real users get ~1.8 s. **Pinning a hard lab gate to LCP 2.5 s makes every
+  build permanently red.** Enforce the 2.5 s LCP SLO with a CloudWatch alarm on `AWS/RUM`
+  `WebVitalsLargestContentfulPaint` p75 → on-call SNS.
+- **Treat the Lighthouse lab budget as a CI regression detector**, set at the measured dev
+  baseline + headroom (ratchet pattern), not the aspirational target. Lock in metrics the lab
+  measures *reliably* (FCP, CLS, TBT) as hard gates; keep noisy ones (LCP under throttling,
+  Speed Index, TTI, aggregate score) generous or `warn` so the pipeline gate doesn't flake.
+- **Exclude synthetic/bot traffic from RUM** (`HeadlessChrome`/`Chrome-Lighthouse`/bot UAs +
+  `navigator.webdriver`) so the field percentiles the SLO alarm reads reflect only real users.
+- Wire the perf job (`<prefix>-web-perf-*`) as a **hard pipeline stage**, not a standalone trigger,
+  so a regression blocks promotion. Keep the build-time JS-size budget a SEPARATE hard gate.
+
+## Lambda Cold Starts
+- Bundle size target: < 5MB per function (compressed).
+- Use AWS SDK v3 modular clients — never bundle the entire SDK.
+- Initialize DB connections and SDK clients outside the handler (reused in warm invocations).
+- Use Provisioned Concurrency for latency-critical functions (auth, catalog search) in production.
+- ARM64 (Graviton2) gives ~20% better price-performance than x86.
+
+## Aurora PostgreSQL
+- Index all foreign key columns and frequently filtered columns.
+- Use `EXPLAIN ANALYZE` to verify query plans for complex queries.
+- Pagination: keyset pagination (`WHERE id > :lastId ORDER BY id LIMIT :limit`) over OFFSET for large datasets.
+- Full-text search: `tsvector` + `GIN` index, not `LIKE '%term%'`.
+- Connection pooling: all Lambda connections go through RDS Proxy.
+
+## DynamoDB
+- Design access patterns first, then model tables. Never scan — always query.
+- Use composite sort keys for time-series data (`timestamp#id`).
+- Set appropriate TTLs to auto-expire old data (notifications: 90 days, activity_logs: 1 year).
+- Use DynamoDB Streams for event-driven processing, not polling.
+
+## Network
+- CloudFront caching: immutable assets (JS, CSS, images) with `max-age=31536000, immutable`.
+- API responses: set appropriate `Cache-Control` headers. List endpoints can be cached 30-60s.
+- Compress API responses with gzip/brotli via API Gateway.
+- Pre-signed S3 URLs: generate on-demand, expire in 15 minutes.

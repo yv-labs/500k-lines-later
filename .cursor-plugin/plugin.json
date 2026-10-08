@@ -1,0 +1,12 @@
+{
+  "name": "500k-lines-later",
+  "version": "0.1.0",
+  "description": "23 Cursor rules and 6 agent skills harvested from a ~427K-line AWS-serverless build, each traceable to the catalogued mistake that created it.",
+  "author": { "name": "YV Labs by Vidh Yasa", "url": "https://github.com/yv-labs" },
+  "license": "MIT",
+  "homepage": "https://github.com/yv-labs/500k-lines-later",
+  "repository": "https://github.com/yv-labs/500k-lines-later",
+  "keywords": ["cursor", "rules", "skills", "agent-skills", "aws", "serverless", "retrospective", "provenance"],
+  "rules": "./rules",
+  "skills": "./skills"
+}
